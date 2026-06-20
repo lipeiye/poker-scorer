@@ -1,0 +1,31 @@
+name = "poker-scorer"
+main = "src/index.ts"
+compatibility_date = "2026-06-20"
+
+# Static assets (frontend)
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+# Durable Object binding
+[[durable_objects.bindings]]
+name = "GAME_ROOM"
+class_name = "GameRoom"
+
+[[durable_objects.bindings]]
+name = "ROOM_REGISTRY"
+class_name = "RoomRegistry"
+
+# Free Tier only supports SQLite-backed Durable Objects.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["GameRoom"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["RoomRegistry"]
+
+# Observability
+[observability]
+enabled = true
+head_sampling_rate = 1
