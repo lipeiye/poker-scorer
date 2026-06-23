@@ -202,6 +202,29 @@ render();
 **修复后部署**：
 - **Version ID**: `bc7e505f-8485-4115-b0ca-8a68eb38810f`
 
-### 10.7 清理声明
+### 10.7 再次回归：游戏界面无法继续操作
+
+**问题**：进入游戏界面后，轮到玩家时底部没有“弃牌 / 跟注 / 加注 / 下一轮”等操作按钮，无法继续游戏。
+
+**根因**：前端拆分为模块时，`styles.css` 丢失了 `.action-bar.visible` 规则。`renderActionBar()` 会在需要时给 `#action-bar` 添加 `visible` 类，但 CSS 中仅有 `.action-bar { display: none; }`，没有对应的 `.action-bar.visible { display: flex; }`，导致操作栏始终不可见。
+
+**修复**：在 `.action-bar` 规则后补回：
+
+```css
+.action-bar.visible{display:flex;animation:view-in .22s ease-out}
+```
+
+**验证**：使用两个独立 Browser Context（模拟两台手机）进行端到端测试：
+1. Host 创建房间，Guest 加入
+2. Host 点击“开始游戏”
+3. Host 看到操作栏（弃牌/跟注/加注）
+4. Host 点击“跟注”后，Guest 的操作栏自动出现
+
+游戏流程恢复可继续。
+
+**修复后部署**：
+- **Version ID**: `66c7ada5-8372-4c96-b56f-9ac18f5acf2a`
+
+### 10.8 清理声明
 
 各次测试的临时目录 `mobile-test-tmp/`（含 Playwright、Chromium、截图、脚本）及本地服务进程均已清除。本报告为唯一保留的测试产物。
