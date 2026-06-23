@@ -225,6 +225,24 @@ render();
 **修复后部署**：
 - **Version ID**: `66c7ada5-8372-4c96-b56f-9ac18f5acf2a`
 
-### 10.8 清理声明
+### 10.8 再次回归：用户反馈仍无加注/跟注选择
+
+**问题**：在浏览器/PWA 中，用户反映进入游戏后仍然看不到“加注”“跟注”按钮。
+
+**根因**：虽然代码已修复，但 Service Worker（`sw.js`）使用固定缓存名 `pk-shell-v1`，会长期缓存旧的 `styles.css`；老用户/已安装 PWA 的设备没有拿到新的 `.action-bar.visible` 规则。
+
+**修复**：
+- 将 `sw.js` 缓存版本升级到 `pk-shell-v2`，触发重新缓存
+- 为 `index.html` 引用的 `styles.css`、`app.js` 以及各 JS 模块间的 `import` URL 统一追加 `?v=2` 查询参数，彻底绕过旧缓存
+
+**验证**：Playwright 端到端测试确认：
+- 创建房间、加入、开始游戏后 Host 看到“弃牌 / 跟注 10 / 加注”
+- 点击“加注”后加注输入控制展开
+- 点击“跟注”后轮到 Guest，Guest 的操作栏自动出现
+
+**修复后部署**：
+- **Version ID**: `e4721aef-50d4-409f-82ae-64d631cabee5`
+
+### 10.9 清理声明
 
 各次测试的临时目录 `mobile-test-tmp/`（含 Playwright、Chromium、截图、脚本）及本地服务进程均已清除。本报告为唯一保留的测试产物。

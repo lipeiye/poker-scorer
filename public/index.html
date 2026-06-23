@@ -2,208 +2,25 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<!-- M2: 放开 user-scalable（可访问性），加 viewport-fit=cover 让 safe-area 生效 -->
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>PK · 德扑计分</title>
-<link rel="preload" href="./assets/hero-d943dda7.jpg" as="image" type="image/jpeg">
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-:root{
-  color-scheme:dark;
-  --bg:#080b0a;
-  --bg-soft:#101513;
-  --surface:rgba(28,34,31,.78);
-  --surface-solid:#191f1c;
-  --surface-raised:#222925;
-  --border:rgba(255,255,255,.09);
-  --border-strong:rgba(255,255,255,.16);
-  --text:#f5f7f6;
-  --dim:#969e99;
-  --accent:#7ee2a8;
-  --accent-strong:#5bd78d;
-  --accent-ink:#092516;
-  --red:#ff6b6b;
-  --blue:#6db8ff;
-  --amber:#ffc665;
-  --purple:#a990ff;
-  --shadow:0 24px 70px rgba(0,0,0,.34);
-  --radius-xl:28px;
-  --radius-lg:22px;
-  --radius-md:16px;
-}
-html{background:var(--bg)}
-body{
-  font-family:ui-rounded,"SF Pro Rounded","SF Pro Display",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-  background:
-    radial-gradient(circle at 50% -10%,rgba(73,151,105,.18),transparent 38rem),
-    linear-gradient(180deg,#0c110f 0%,var(--bg) 62%);
-  color:var(--text);min-height:100dvh;overflow-x:hidden;-webkit-tap-highlight-color:transparent;
-  -webkit-font-smoothing:antialiased;
-}
-.view{display:none;min-height:100dvh}.view.active{display:flex;flex-direction:column;animation:view-in .42s cubic-bezier(.2,.8,.2,1)}
-button{border:none;background:none;color:inherit;font:inherit;cursor:pointer;outline:none;-webkit-tap-highlight-color:transparent}
-input{border:none;background:none;color:inherit;font:inherit;outline:none}
-button:focus-visible,input:focus-visible{outline:3px solid rgba(126,226,168,.36);outline-offset:2px}
 
-@keyframes view-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
-@keyframes action-in{from{opacity:0;transform:translate(-50%,8px)}to{opacity:1;transform:translate(-50%,0)}}
-@keyframes pulse-ring{0%,100%{box-shadow:0 0 0 0 rgba(255,198,101,.18)}50%{box-shadow:0 0 0 7px rgba(255,198,101,0)}}
+<!-- M1: PWA / 移动端 meta -->
+<meta name="theme-color" content="#080b0a">
+<meta name="description" content="实时德州扑克计分器，专注牌局，筹码交给我们。">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="德扑计分">
+<meta name="format-detection" content="telephone=no">
 
-.page{position:relative;isolation:isolate;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100dvh;padding:34px 24px}
-.page::before,.page::after{content:"";position:absolute;z-index:-1;border-radius:999px;filter:blur(2px);pointer-events:none}
-.page::before{width:260px;height:260px;top:-110px;right:-90px;background:radial-gradient(circle,rgba(126,226,168,.16),transparent 68%)}
-.page::after{width:220px;height:220px;bottom:-90px;left:-100px;background:radial-gradient(circle,rgba(109,184,255,.1),transparent 68%)}
-.home-shell{width:100%;max-width:390px;display:flex;flex-direction:column;align-items:center}
-.hero-art{position:relative;width:188px;height:188px;border-radius:44px;padding:1px;background:linear-gradient(145deg,rgba(255,255,255,.2),rgba(255,255,255,.02));box-shadow:0 28px 75px rgba(0,0,0,.34),0 12px 45px rgba(63,154,101,.14)}
-.hero-art::after{content:"";position:absolute;inset:0;border-radius:inherit;box-shadow:inset 0 1px 0 rgba(255,255,255,.16);pointer-events:none}
-.hero-art img{width:100%;height:100%;display:block;object-fit:cover;border-radius:43px}
-.brand-mark{position:absolute;right:-9px;bottom:-10px;width:60px;height:60px;border:4px solid #111713;border-radius:20px;display:grid;place-items:center;background:linear-gradient(145deg,#95efb9,#55ce87);box-shadow:0 14px 34px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.55);color:#0a2a18;font-size:23px;font-weight:800;letter-spacing:-1.5px;transform:rotate(5deg)}
-.page h1{font-size:40px;font-weight:760;letter-spacing:-1.8px;margin-top:31px}
-.page h1 span{color:var(--accent)}
-.home-kicker{margin-top:8px;color:var(--dim);font-size:15px;letter-spacing:.1px;text-align:center}
-.home-actions{width:100%;margin-top:44px;padding:8px;border:1px solid var(--border);border-radius:var(--radius-xl);background:rgba(20,26,23,.66);box-shadow:var(--shadow);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px)}
-.home-actions>.btn{margin-inline:auto}
-.home-divider{display:flex;align-items:center;gap:12px;margin:18px 8px;color:#6f7772;font-size:12px}
-.home-divider::before,.home-divider::after{content:"";height:1px;flex:1;background:var(--border)}
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="icon" type="image/png" href="./favicon.png">
+<link rel="apple-touch-icon" href="./apple-touch-icon.png">
+<link rel="preload" href="./assets/hero-d943dda7.jpg" as="image" type="image/jpeg" fetchpriority="high">
 
-.btn{display:flex;align-items:center;justify-content:center;width:100%;max-width:340px;height:54px;border-radius:17px;font-size:16px;font-weight:680;letter-spacing:-.15px;transition:transform .16s ease,filter .16s ease,background .16s ease,border-color .16s ease}
-.btn:hover{filter:brightness(1.05)}.btn:active{transform:scale(.975);filter:brightness(.95)}
-.btn-primary{background:linear-gradient(180deg,#89e9b0,#69db98);color:var(--accent-ink);box-shadow:inset 0 1px 0 rgba(255,255,255,.45),0 8px 26px rgba(91,215,141,.16)}
-.btn-secondary{border:1px solid var(--border-strong);background:rgba(255,255,255,.045);color:var(--text)}
-.btn-danger{background:rgba(255,107,107,.14);border:1px solid rgba(255,107,107,.22);color:#ff9c9c}
-.btn-sm{height:46px;font-size:14px;border-radius:14px;max-width:180px}
-.btn-xs{height:38px;font-size:13px;border-radius:12px;padding:0 14px;max-width:none}
-
-.input-field{width:100%;max-width:340px;height:54px;border:1px solid var(--border);border-radius:17px;padding:0 16px;font-size:17px;background:rgba(255,255,255,.05);text-align:center;letter-spacing:5px;text-transform:uppercase;transition:border-color .2s,background .2s}
-.input-field:focus{border-color:rgba(126,226,168,.5);background:rgba(255,255,255,.075)}
-.input-field::placeholder{letter-spacing:0;text-transform:none;color:#747c77}
-
-.gap-8{gap:8px}.gap-12{gap:12px}.gap-16{gap:16px}.gap-20{gap:20px}.gap-24{gap:24px}
-.mt-8{margin-top:8px}.mt-12{margin-top:12px}.mt-16{margin-top:16px}.mt-24{margin-top:24px}.mt-32{margin-top:32px}.mt-48{margin-top:48px}
-.w-full{width:100%}.text-center{text-align:center}
-.flex{display:flex}.flex-col{flex-direction:column}.items-center{align-items:center}.justify-center{justify-content:center}
-.text-dim{color:var(--dim)}.text-sm{font-size:13px}.text-xs{font-size:12px}.font-mono{font-family:ui-monospace,"SFMono-Regular",monospace}
-
-.top-bar{display:grid;grid-template-columns:42px minmax(0,1fr) auto;align-items:center;gap:10px;min-height:66px;padding:10px max(16px,calc((100vw - 680px)/2));position:sticky;top:0;background:rgba(8,11,10,.72);border-bottom:1px solid rgba(255,255,255,.055);backdrop-filter:blur(24px) saturate(140%);-webkit-backdrop-filter:blur(24px) saturate(140%);z-index:10}
-.nav-button,.icon-button{width:38px;height:38px;border:1px solid var(--border);border-radius:13px;background:rgba(255,255,255,.045);display:grid;place-items:center;color:#dce2de;font-size:20px;transition:transform .16s,background .16s}
-.nav-button:active,.icon-button:active{transform:scale(.94);background:rgba(255,255,255,.08)}
-.top-actions{display:flex;align-items:center;gap:7px}
-.room-meta{display:flex;flex-direction:column;gap:2px}
-.room-eyebrow{font-size:10px;color:var(--dim);font-weight:650;letter-spacing:1.3px;text-transform:uppercase}
-.top-bar .room-code{font-size:19px;font-weight:750;letter-spacing:2.4px;color:var(--text)}
-.top-bar .hand-num,.count-pill{font-size:12px;color:#c7cdc9;padding:7px 11px;border:1px solid var(--border);border-radius:999px;background:rgba(255,255,255,.045)}
-
-.content-shell{width:100%;max-width:680px;margin:0 auto}
-.section-label{padding:24px 22px 9px;color:var(--dim);font-size:12px;font-weight:650;letter-spacing:.8px;text-transform:uppercase}
-.player-list{padding:4px 16px}
-.player-item{position:relative;display:flex;align-items:center;justify-content:space-between;min-height:64px;padding:12px 15px;border:1px solid transparent;border-radius:18px;background:var(--surface);margin-bottom:8px;box-shadow:inset 0 1px 0 rgba(255,255,255,.035);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);transition:opacity .2s,transform .2s,border-color .2s,background .2s}
-.player-item::before{content:"";width:38px;height:38px;flex:0 0 38px;margin-right:12px;border-radius:50%;background:linear-gradient(145deg,#303a35,#202723);box-shadow:inset 0 1px 0 rgba(255,255,255,.08)}
-.player-item::after{content:attr(data-initial);position:absolute;left:15px;width:38px;text-align:center;color:#aeb8b2;font-size:14px;font-weight:750}
-.player-item>div:first-of-type,.player-item>.player-name{margin-right:auto}
-.player-item.is-you{border-color:rgba(126,226,168,.32);background:linear-gradient(90deg,rgba(126,226,168,.09),var(--surface))}
-.player-item.is-you::before{background:linear-gradient(145deg,#8ceab2,#5bce89)}
-.player-item.is-you::after{color:#103622}
-.player-item.is-turn{border-color:rgba(255,198,101,.52);background:linear-gradient(90deg,rgba(255,198,101,.13),var(--surface));animation:pulse-ring 2.2s ease-in-out infinite}
-.player-item.is-dealer{box-shadow:inset 3px 0 0 rgba(255,198,101,.7)}
-.player-item.is-folded{opacity:.38;filter:saturate(.5)}
-.player-item.is-allin{box-shadow:inset 3px 0 0 rgba(255,107,107,.75)}
-.player-name{font-weight:660;font-size:15px;letter-spacing:-.1px}
-.player-chips{font-size:16px;color:var(--accent);font-weight:750;font-variant-numeric:tabular-nums}
-.player-chips::before{content:"●";font-size:9px;margin-right:6px;vertical-align:2px;color:#61d791}
-.player-bet{font-size:12px;color:var(--amber);margin-top:3px}
-.player-tag{display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:21px;font-size:9px;padding:0 6px;border-radius:7px;font-weight:800;margin-left:5px;vertical-align:1px;letter-spacing:.2px}
-.tag-d{background:rgba(255,198,101,.16);color:#ffd789}.tag-sb{background:rgba(169,144,255,.15);color:#c5b5ff}.tag-bb{background:rgba(109,184,255,.15);color:#9acfff}.tag-allin{background:rgba(255,107,107,.16);color:#ff9b9b}
-.tag-offline{background:rgba(255,255,255,.07);color:#969e99}
-
-.leaderboard{margin:4px 16px;padding:6px 14px;border:1px solid var(--border);border-radius:var(--radius-lg);background:linear-gradient(145deg,rgba(31,39,35,.82),rgba(21,27,24,.74))}
-.rank-row{display:grid;grid-template-columns:34px minmax(0,1fr) auto;align-items:center;min-height:47px;gap:8px}
-.rank-row+.rank-row{border-top:1px solid var(--border)}
-.rank-number{width:25px;height:25px;border-radius:9px;display:grid;place-items:center;color:var(--dim);font-size:11px;font-weight:780;background:rgba(255,255,255,.045)}
-.rank-row:nth-child(1) .rank-number{background:rgba(255,198,101,.16);color:#ffd789}
-.rank-row:nth-child(2) .rank-number{background:rgba(210,220,215,.12);color:#dce5e0}
-.rank-row:nth-child(3) .rank-number{background:rgba(213,142,91,.14);color:#eab184}
-.rank-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;font-weight:650}
-.rank-score{color:var(--accent);font-size:14px;font-weight:760;font-variant-numeric:tabular-nums}
-
-.game-hero{width:calc(100% - 32px);max-width:648px;margin:16px auto 8px;padding:20px 16px 22px;border:1px solid var(--border);border-radius:var(--radius-xl);background:linear-gradient(145deg,rgba(34,45,39,.9),rgba(18,24,21,.84));box-shadow:var(--shadow),inset 0 1px 0 rgba(255,255,255,.055)}
-.pot-bar{padding:18px 16px 0;text-align:center}
-.pot-amount{font-size:42px;line-height:1;font-weight:780;letter-spacing:-1.8px;color:var(--text);font-variant-numeric:tabular-nums}
-.pot-amount::before{content:"●";display:inline-block;margin-right:10px;color:var(--accent);font-size:18px;vertical-align:7px;text-shadow:0 0 22px rgba(126,226,168,.5)}
-.pot-label{font-size:11px;color:var(--dim);margin-bottom:8px;font-weight:700;letter-spacing:1.4px;text-transform:uppercase}
-
-.round-bar{text-align:center}
-.round-name{font-size:12px;font-weight:700;color:#b9ddff;padding:7px 12px;background:rgba(109,184,255,.11);border:1px solid rgba(109,184,255,.14);border-radius:999px;display:inline-block}
-
-.action-bar{position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:min(100%,720px);padding:12px 16px;padding-bottom:max(14px,env(safe-area-inset-bottom));background:rgba(16,20,18,.86);border:1px solid var(--border);border-bottom:none;border-radius:24px 24px 0 0;box-shadow:0 -16px 60px rgba(0,0,0,.35);backdrop-filter:blur(24px) saturate(140%);-webkit-backdrop-filter:blur(24px) saturate(140%);display:none;flex-direction:column;gap:9px;z-index:20}
-.action-bar.visible{display:flex;animation:action-in .25s ease-out}
-.action-row{display:flex;flex-wrap:wrap;gap:8px;justify-content:center}
-.action-row .btn{flex:1 1 90px}
-.action-row .btn-xs{flex:1 1 auto}
-.raise-control{display:flex;align-items:center;gap:8px;width:100%}
-.raise-control input{flex:1;min-width:64px;height:42px;background:rgba(255,255,255,.055);border:1px solid var(--border);border-radius:13px;padding:0 10px;font-size:15px;text-align:center;font-variant-numeric:tabular-nums}
-
-.log-bar{padding:11px 22px;margin-bottom:92px}
-.log-text{font-size:12px;color:var(--dim);text-align:center;line-height:1.55}
-
-.settings-card{margin:4px 16px;padding:4px 16px;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface)}
-.settings-row{display:flex;align-items:center;justify-content:space-between;min-height:58px;padding:8px 0}
-.settings-row+ .settings-row{border-top:1px solid var(--border)}
-.settings-row label{font-size:15px;color:#d9ddda}
-.settings-row input{width:88px;height:38px;background:rgba(255,255,255,.055);border:1px solid var(--border);border-radius:12px;padding:0 10px;font-size:15px;text-align:center;font-variant-numeric:tabular-nums}
-.lobby-footer{margin-top:auto;padding:24px 16px max(20px,env(safe-area-inset-bottom))}
-.lobby-footer .btn{margin:0 auto;max-width:648px}
-
-.community-cards{display:flex;gap:7px;justify-content:center;padding:18px 0 2px}
-.card-slot{position:relative;width:43px;height:58px;border-radius:10px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.035);display:flex;align-items:center;justify-content:center;font-size:0;color:var(--dim);box-shadow:inset 0 1px 0 rgba(255,255,255,.04)}
-.card-slot::after{content:"";width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,.1)}
-.card-slot.dealt{border-color:rgba(109,184,255,.38);background:linear-gradient(145deg,#f7faf8,#dfe8e3);box-shadow:0 8px 20px rgba(0,0,0,.2)}
-.card-slot.dealt::after{content:"♠";width:auto;height:auto;background:none;color:#152019;font-size:22px}
-
-.toast{position:fixed;top:50%;left:50%;transform:translate(-50%,-45%) scale(.96);background:rgba(38,43,40,.92);border:1px solid var(--border-strong);box-shadow:var(--shadow);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);color:#fff;padding:13px 20px;border-radius:14px;font-size:14px;z-index:100;pointer-events:none;opacity:0;transition:opacity .22s,transform .22s;white-space:nowrap}
-.toast.show{opacity:1;transform:translate(-50%,-50%) scale(1)}
-.modal-backdrop{position:fixed;inset:0;padding:24px;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.58);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);z-index:90}
-.modal-backdrop.visible{display:flex;animation:view-in .22s ease-out}
-.app-modal{position:relative;width:100%;max-width:390px;padding:28px 24px 22px;border:1px solid var(--border-strong);border-radius:28px;background:linear-gradient(145deg,#222a26,#151a18);box-shadow:0 30px 100px rgba(0,0,0,.55);text-align:center}
-.modal-x{position:absolute;top:14px;right:14px;width:36px;height:36px;border:1px solid var(--border);border-radius:12px;display:grid;place-items:center;background:rgba(255,255,255,.045);color:#cdd4d0;font-size:20px;line-height:1;transition:transform .15s,background .15s}
-.modal-x:active{transform:scale(.93);background:rgba(255,255,255,.08)}
-.share-icon{width:54px;height:54px;margin:0 auto 16px;border-radius:18px;display:grid;place-items:center;background:rgba(126,226,168,.13);color:var(--accent);font-size:25px}
-.name-avatar{width:68px;height:68px;margin:0 auto 16px;display:block;object-fit:cover;object-position:center 42%;border:3px solid rgba(126,226,168,.52);border-radius:22px;box-shadow:0 10px 28px rgba(0,0,0,.3)}
-.app-modal h2{font-size:23px;letter-spacing:-.6px}
-.app-modal p{margin-top:8px;color:var(--dim);font-size:13px;line-height:1.5}
-.share-code{margin:22px 0 14px;padding:15px;border:1px solid rgba(126,226,168,.22);border-radius:17px;background:rgba(126,226,168,.075);color:var(--accent);font-size:28px;font-weight:800;letter-spacing:7px;font-variant-numeric:tabular-nums}
-.share-actions{display:flex;gap:9px}
-.share-actions .btn{height:48px;font-size:14px}
-.modal-close{margin-top:14px;color:var(--dim);font-size:13px;padding:7px 14px}
-.name-form{margin-top:24px;display:flex;flex-direction:column;gap:11px}
-.name-input{width:100%;height:62px;padding:0 18px;border:1px solid var(--border-strong);border-radius:18px;background:rgba(255,255,255,.055);font-size:19px;font-weight:650;text-align:center;transition:border-color .2s,background .2s}
-.name-input:focus{border-color:rgba(126,226,168,.58);background:rgba(255,255,255,.075)}
-.name-input::placeholder{color:#747c77;font-weight:500}
-.name-form .btn{max-width:none}
-.name-error{min-height:18px;color:#ff9c9c;font-size:12px}
-.winner-modal{max-width:410px;overflow:hidden;padding-top:24px}
-.winner-image{width:100%;aspect-ratio:321/200;display:block;object-fit:cover;border:1px solid var(--border-strong);border-radius:20px;box-shadow:0 16px 40px rgba(0,0,0,.32)}
-.winner-kicker{margin-top:19px;color:var(--accent);font-size:12px;font-weight:760;letter-spacing:1.5px}
-.winner-modal h2{margin-top:5px;font-size:27px}
-.winner-modal .btn{max-width:none;margin-top:20px}
-.next-round-bar{padding:8px 16px;text-align:center;margin-bottom:8px}
-
-@media (min-width:720px){
-  .player-list{display:grid;grid-template-columns:1fr 1fr;gap:10px 12px;padding:4px 16px}
-  .player-item{margin-bottom:0}
-  .settings-card{margin-left:16px;margin-right:16px}
-}
-@media (max-width:380px){
-  .page{padding-left:18px;padding-right:18px}
-  .hero-art{width:166px;height:166px;border-radius:39px}
-  .hero-art img{border-radius:38px}
-  .brand-mark{width:54px;height:54px;border-radius:18px;font-size:21px}
-  .page h1{font-size:35px}
-  .community-cards{gap:5px}.card-slot{width:39px;height:54px}
-  .player-list{padding-left:12px;padding-right:12px}
-}
-@media (prefers-reduced-motion:reduce){
-  *{animation-duration:.01ms!important;transition-duration:.01ms!important}
-}
-</style>
+<link rel="stylesheet" href="./styles.css?v=2">
 </head>
 <body>
 
@@ -220,7 +37,10 @@ button:focus-visible,input:focus-visible{outline:3px solid rgba(126,226,168,.36)
         <button class="btn btn-primary" onclick="createRoom()">创建新牌局</button>
         <div class="home-divider">或加入朋友</div>
         <div class="w-full flex flex-col items-center gap-12">
-          <input id="join-code" class="input-field" placeholder="输入 6 位房间码" maxlength="6" oninput="this.value=this.value.toUpperCase()">
+          <!-- M4: autocapitalize + inputmode，手机直接出大写键盘 -->
+          <input id="join-code" class="input-field" placeholder="输入 6 位房间码" maxlength="6"
+                 autocapitalize="characters" autocomplete="off" spellcheck="false" inputmode="text"
+                 oninput="this.value=this.value.toUpperCase()">
           <button class="btn btn-secondary" onclick="joinRoom()">加入牌局</button>
         </div>
       </div>
@@ -236,6 +56,9 @@ button:focus-visible,input:focus-visible{outline:3px solid rgba(126,226,168,.36)
       <span class="room-code" id="lobby-code"></span>
     </div>
     <div class="top-actions">
+      <!-- M11: 连接状态指示点 -->
+      <span class="conn-text"></span>
+      <span class="conn-dot" aria-hidden="true"></span>
       <span class="count-pill" id="lobby-count"></span>
       <button class="icon-button" onclick="copyCurrentRoomCode()" aria-label="复制房间码">⧉</button>
     </div>
@@ -249,11 +72,11 @@ button:focus-visible,input:focus-visible{outline:3px solid rgba(126,226,168,.36)
     <div class="settings-card">
       <div class="settings-row">
         <label>小盲</label>
-        <input id="set-sb" type="number" value="10" min="1" onchange="updateSettings()">
+        <input id="set-sb" type="number" value="10" min="1" inputmode="numeric" onchange="updateSettings()">
       </div>
       <div class="settings-row">
         <label>大盲</label>
-        <input id="set-bb" type="number" value="20" min="2" onchange="updateSettings()">
+        <input id="set-bb" type="number" value="20" min="2" inputmode="numeric" onchange="updateSettings()">
       </div>
     </div>
   </div>
@@ -270,6 +93,8 @@ button:focus-visible,input:focus-visible{outline:3px solid rgba(126,226,168,.36)
       <span class="room-code" id="game-code"></span>
     </div>
     <div class="top-actions">
+      <span class="conn-text"></span>
+      <span class="conn-dot" aria-hidden="true"></span>
       <span class="hand-num" id="game-hand"></span>
       <button class="icon-button" onclick="copyCurrentRoomCode()" aria-label="复制房间码">⧉</button>
     </div>
@@ -294,7 +119,7 @@ button:focus-visible,input:focus-visible{outline:3px solid rgba(126,226,168,.36)
     <div class="action-row" id="action-buttons"></div>
     <div class="raise-control" id="raise-control" style="display:none">
       <button class="btn btn-xs btn-secondary" onclick="adjustRaise(-1)">-</button>
-      <input id="raise-amount" type="number" value="0" min="0">
+      <input id="raise-amount" type="number" value="0" min="0" inputmode="numeric">
       <button class="btn btn-xs btn-secondary" onclick="adjustRaise(1)">+</button>
       <button class="btn btn-xs btn-primary" onclick="doRaise()">加注</button>
     </div>
@@ -345,543 +170,6 @@ button:focus-visible,input:focus-visible{outline:3px solid rgba(126,226,168,.36)
 
 <div class="toast" id="toast"></div>
 
-<script>
-const $ = s => document.querySelector(s);
-const $$ = s => document.querySelectorAll(s);
-
-let ws = null;
-let state = null;
-let myPlayerId = getDeviceId();
-let selectedWinners = new Set();
-let intentionalClose = false;
-let reconnectTimer = null;
-let currentRoomId = '';
-let currentName = '';
-let hostSharePending = false;
-let pendingNameAction = null;
-
-function getDeviceId() {
-  let id = localStorage.getItem('pk_device_id');
-  if (!id) {
-    id = crypto.randomUUID();
-    localStorage.setItem('pk_device_id', id);
-  }
-  return id;
-}
-
-function getSavedPlayer(roomId) {
-  try {
-    var players = JSON.parse(localStorage.getItem('pk_players') || '{}');
-    if (players[roomId]) return players[roomId];
-
-    var legacy = JSON.parse(localStorage.getItem('pk_player') || '{}');
-    return legacy.roomId === roomId ? legacy : null;
-  } catch { return null; }
-}
-
-function savePlayer(roomId, playerId, name) {
-  var players = {};
-  try { players = JSON.parse(localStorage.getItem('pk_players') || '{}'); } catch {}
-  players[roomId] = { roomId: roomId, playerId: playerId, name: name };
-  localStorage.setItem('pk_players', JSON.stringify(players));
-}
-
-function showView(id) {
-  $$('.view').forEach(v => v.classList.remove('active'));
-  $(`#view-${id}`).classList.add('active');
-}
-
-function toast(msg, dur) {
-  dur = dur || 1500;
-  const t = $('#toast');
-  t.textContent = msg;
-  t.classList.add('show');
-  setTimeout(function() { t.classList.remove('show'); }, dur);
-}
-
-function createRoom() {
-  openNameModal({ type: 'create' });
-}
-
-async function createRoomWithName(name) {
-  try {
-    var res = await fetch('/api/rooms', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ smallBlind: 10, bigBlind: 20 })
-    });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    var data = await res.json();
-    if (!data.roomId) throw new Error('no roomId');
-    connectWS(data.roomId, name, true);
-  } catch (e) {
-    toast('创建失败: ' + e.message, 3000);
-  }
-}
-
-async function joinRoom() {
-  var code = document.getElementById('join-code').value.trim().toUpperCase();
-  if (!/^[A-HJ-NP-Z2-9]{6}$/.test(code)) {
-    toast('房间码不存在，请检查后重试', 2400);
-    return;
-  }
-
-  try {
-    var res = await fetch('/api/rooms/' + encodeURIComponent(code) + '/exists');
-    if (res.status === 404) {
-      toast('房间码不存在或已过期', 2600);
-      return;
-    }
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-  } catch (e) {
-    toast('暂时无法检查房间，请稍后重试', 2600);
-    return;
-  }
-
-  var saved = getSavedPlayer(code);
-  if (saved && saved.name) {
-    toast('正在恢复你的玩家身份…');
-    connectWS(code, saved.name, false);
-    return;
-  }
-  openNameModal({ type: 'join', roomId: code });
-}
-
-function openNameModal(action) {
-  pendingNameAction = action;
-  var input = document.getElementById('player-name-input');
-  input.value = '';
-  document.getElementById('name-error').textContent = '';
-  document.getElementById('name-modal').classList.add('visible');
-  setTimeout(function() { input.focus(); }, 120);
-}
-
-function closeNameModal() {
-  pendingNameAction = null;
-  document.getElementById('name-modal').classList.remove('visible');
-  document.getElementById('name-error').textContent = '';
-}
-
-function submitName(event) {
-  event.preventDefault();
-  var input = document.getElementById('player-name-input');
-  var name = input.value.trim();
-  if (!name) {
-    document.getElementById('name-error').textContent = '请输入一个名字';
-    input.focus();
-    return;
-  }
-  var action = pendingNameAction;
-  closeNameModal();
-  if (!action) return;
-  if (action.type === 'create') {
-    createRoomWithName(name);
-  } else if (action.type === 'join') {
-    connectWS(action.roomId, name, false);
-  }
-}
-
-function connectWS(roomId, name, isHost) {
-  if (ws) {
-    ws.onclose = null;
-    ws.close();
-    ws = null;
-  }
-  if (reconnectTimer) clearTimeout(reconnectTimer);
-  intentionalClose = false;
-  currentRoomId = roomId;
-  currentName = name;
-  hostSharePending = Boolean(isHost);
-
-  var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ws = new WebSocket(proto + '//' + location.host + '/ws/' + roomId);
-
-  ws.onopen = function() {
-    var saved = getSavedPlayer(roomId);
-    ws.send(JSON.stringify({
-      type: 'join',
-      name: name,
-      playerId: saved ? saved.playerId : undefined,
-      deviceId: getDeviceId()
-    }));
-  };
-
-  ws.onmessage = function(e) {
-    var msg = JSON.parse(e.data);
-    if (msg.type === 'state') {
-      state = msg.state;
-      if (msg.state.yourPlayerId) {
-        myPlayerId = msg.state.yourPlayerId;
-        savePlayer(roomId, myPlayerId, name);
-      }
-      render();
-      if (hostSharePending) {
-        hostSharePending = false;
-        setTimeout(function() { showShareModal(roomId); }, 180);
-      }
-    } else if (msg.type === 'error') {
-      toast(msg.message, 2000);
-    }
-  };
-
-  ws.onclose = function() {
-    if (!intentionalClose && state && state.round !== 'waiting') {
-      toast('连接断开，3秒后重连...');
-      reconnectTimer = setTimeout(function() { connectWS(roomId, name, false); }, 3000);
-    }
-  };
-
-  ws.onerror = function() { toast('连接失败'); };
-}
-
-function leaveTable() {
-  intentionalClose = true;
-  if (reconnectTimer) clearTimeout(reconnectTimer);
-  closeShareModal();
-  document.getElementById('action-bar').classList.remove('visible');
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'leave' }));
-    setTimeout(function() {
-      if (ws) ws.close();
-      ws = null;
-    }, 80);
-  } else if (ws) {
-    ws.close();
-    ws = null;
-  }
-  state = null;
-  selectedWinners.clear();
-  showView('home');
-}
-
-function showShareModal(roomId) {
-  document.getElementById('share-code').textContent = roomId;
-  document.getElementById('share-modal').classList.add('visible');
-}
-
-function closeShareModal() {
-  document.getElementById('share-modal').classList.remove('visible');
-}
-
-function closeWinnerModal() {
-  document.getElementById('winner-modal').classList.remove('visible');
-}
-
-function closeTopModal() {
-  if (document.getElementById('winner-modal').classList.contains('visible')) {
-    closeWinnerModal();
-    return true;
-  }
-  if (document.getElementById('name-modal').classList.contains('visible')) {
-    closeNameModal();
-    return true;
-  }
-  if (document.getElementById('share-modal').classList.contains('visible')) {
-    closeShareModal();
-    return true;
-  }
-  return false;
-}
-
-async function copyCurrentRoomCode() {
-  var code = currentRoomId || (state && state.roomId);
-  if (!code) return;
-  try {
-    await navigator.clipboard.writeText(code);
-  } catch {
-    var input = document.createElement('textarea');
-    input.value = code;
-    input.style.position = 'fixed';
-    input.style.opacity = '0';
-    document.body.appendChild(input);
-    input.select();
-    document.execCommand('copy');
-    input.remove();
-  }
-  closeShareModal();
-  toast('房间码 ' + code + ' 已复制', 2200);
-}
-
-async function shareCurrentRoom() {
-  var code = currentRoomId || (state && state.roomId);
-  if (!code) return;
-  if (navigator.share) {
-    try {
-      await navigator.share({
-        title: '加入我的德扑牌桌',
-        text: '房间码：' + code,
-        url: location.origin
-      });
-      closeShareModal();
-      return;
-    } catch (e) {
-      if (e && e.name === 'AbortError') return;
-    }
-  }
-  await copyCurrentRoomCode();
-}
-
-function render() {
-  if (!state) return;
-  if (state.round === 'waiting') {
-    renderLobby();
-    showView('lobby');
-  } else {
-    renderGame();
-    showView('game');
-  }
-  maybeShowWinnerCelebration();
-}
-
-function maybeShowWinnerCelebration() {
-  if (!state.lastWinnerIds || state.lastWinnerIds.indexOf(myPlayerId) === -1) return;
-  var celebrationKey = state.roomId + ':' + state.handNumber + ':' + myPlayerId;
-  if (sessionStorage.getItem('pk_celebrated_win') === celebrationKey) return;
-  sessionStorage.setItem('pk_celebrated_win', celebrationKey);
-  setTimeout(function() {
-    document.getElementById('winner-modal').classList.add('visible');
-  }, 180);
-}
-
-function renderLobby() {
-  document.getElementById('lobby-code').textContent = state.roomId;
-  var connectedCount = state.players.filter(function(p) { return p.isConnected; }).length;
-  document.getElementById('lobby-count').textContent = connectedCount + ' 在线';
-  document.getElementById('set-sb').value = state.smallBlind;
-  document.getElementById('set-bb').value = state.bigBlind;
-  renderLeaderboard('lobby-leaderboard');
-
-  var me = state.players.find(function(p) { return p.id === myPlayerId; });
-  document.getElementById('btn-start').style.display = me ? '' : 'none';
-
-  var html = '';
-  for (var i = 0; i < state.players.length; i++) {
-    var p = state.players[i];
-    html += '<div class="player-item' + (p.id === myPlayerId ? ' is-you' : '') + '" data-initial="' + esc((p.name || '?').charAt(0)) + '">';
-    html += '<span class="player-name">' + esc(p.name) + (p.id === myPlayerId ? ' <span class="text-xs text-dim">(你)</span>' : '') + (!p.isConnected ? ' <span class="player-tag tag-offline">离线</span>' : '') + '</span>';
-    html += '<span class="player-chips">' + p.chips + '</span>';
-    html += '</div>';
-  }
-  document.getElementById('lobby-players').innerHTML = html;
-}
-
-function renderGame() {
-  document.getElementById('game-code').textContent = state.roomId;
-  document.getElementById('game-hand').textContent = state.handNumber > 0 ? '第' + state.handNumber + '手' : '';
-
-  var roundNames = { waiting:'等待', preflop:'翻牌前', flop:'翻牌', turn:'转牌', river:'河牌', showdown:'摊牌' };
-  document.getElementById('round-bar').innerHTML = '<span class="round-name">' + (roundNames[state.round] || state.round) + '</span>';
-
-  var cards = '';
-  for (var i = 0; i < 5; i++) {
-    cards += '<div class="card-slot' + (i < state.communityCards ? ' dealt' : '') + '">' + (i < state.communityCards ? '🂠' : '') + '</div>';
-  }
-  document.getElementById('community-cards').innerHTML = cards;
-
-  document.getElementById('pot-amount').textContent = state.pot;
-  renderLeaderboard('game-leaderboard');
-
-  var n = state.players.length;
-  var dealerIdx = state.dealerIndex;
-  var activeIndexes = state.players.map(function(p, i) { return p.isActive ? i : -1; })
-    .filter(function(i) { return i >= 0; });
-  function nextActive(from) {
-    if (!activeIndexes.length) return -1;
-    for (var offset = 1; offset <= n; offset++) {
-      var candidate = (from + offset) % n;
-      if (activeIndexes.indexOf(candidate) >= 0) return candidate;
-    }
-    return -1;
-  }
-  var sbIdx = activeIndexes.length === 2 ? dealerIdx : nextActive(dealerIdx);
-  var bbIdx = nextActive(sbIdx);
-
-  var phtml = '';
-  for (var i = 0; i < state.players.length; i++) {
-    var p = state.players[i];
-    var tag = '';
-    if (i === dealerIdx) tag += '<span class="player-tag tag-d">D</span>';
-    if (i === sbIdx) tag += '<span class="player-tag tag-sb">SB</span>';
-    if (i === bbIdx) tag += '<span class="player-tag tag-bb">BB</span>';
-    if (p.isAllIn) tag += '<span class="player-tag tag-allin">ALL</span>';
-    if (!p.isConnected) tag += '<span class="player-tag tag-offline">离线</span>';
-
-    var isTurn = i === state.currentPlayerIndex && !p.isFolded && !p.isAllIn && state.round !== 'showdown' && state.round !== 'waiting';
-    var cls = 'player-item';
-    if (p.id === myPlayerId) cls += ' is-you';
-    if (isTurn) cls += ' is-turn';
-    if (i === dealerIdx) cls += ' is-dealer';
-    if (p.isFolded) cls += ' is-folded';
-    if (p.isAllIn) cls += ' is-allin';
-
-    phtml += '<div class="' + cls + '" data-initial="' + esc((p.name || '?').charAt(0)) + '">';
-    phtml += '<div><span class="player-name">' + esc(p.name) + '</span>' + tag + '</div>';
-    phtml += '<div style="text-align:right">';
-    phtml += '<div class="player-chips">' + p.chips + '</div>';
-    if (p.currentBet > 0) phtml += '<div class="player-bet">下注 ' + p.currentBet + '</div>';
-    phtml += '</div></div>';
-  }
-  document.getElementById('game-players').innerHTML = phtml;
-
-  document.getElementById('log-text').textContent = state.lastAction || '';
-
-  var me = state.players.find(function(p) { return p.id === myPlayerId; });
-  var myIdx = state.players.findIndex(function(p) { return p.id === myPlayerId; });
-  var isMyTurn = state.currentPlayerIndex === myIdx
-    && me && !me.isFolded && !me.isAllIn
-    && state.round !== 'showdown' && state.round !== 'waiting';
-
-  var actionBar = document.getElementById('action-bar');
-  var ab = document.getElementById('action-buttons');
-  var rc = document.getElementById('raise-control');
-
-  if (state.round === 'showdown') {
-    actionBar.classList.add('visible');
-    renderShowdown();
-    return;
-  }
-
-  if (isRoundComplete() && state.round !== 'showdown') {
-    actionBar.classList.add('visible');
-    document.getElementById('action-hint').textContent = '';
-    rc.style.display = 'none';
-    ab.innerHTML = '<button class="btn btn-sm btn-primary" onclick="nextRound()">下一轮</button>';
-    return;
-  }
-
-  if (!isMyTurn) {
-    actionBar.classList.remove('visible');
-    return;
-  }
-
-  actionBar.classList.add('visible');
-  rc.style.display = 'none';
-
-  var toCall = state.currentBet - (me.currentBet || 0);
-  document.getElementById('action-hint').textContent = toCall > 0 ? '需跟注 ' + toCall : '轮到你操作';
-
-  var btns = '';
-  btns += '<button class="btn btn-sm btn-danger" onclick="doAction(\'fold\')">弃牌</button>';
-  if (toCall === 0) {
-    btns += '<button class="btn btn-sm btn-primary" onclick="doAction(\'check\')">过牌</button>';
-  } else {
-    btns += '<button class="btn btn-sm btn-primary" onclick="doAction(\'call\')">跟注 ' + Math.min(toCall, me.chips) + '</button>';
-  }
-  btns += '<button class="btn btn-sm btn-secondary" onclick="showRaise()">加注</button>';
-  ab.innerHTML = btns;
-
-  document.getElementById('raise-amount').value = state.bigBlind;
-}
-
-function renderLeaderboard(elementId) {
-  var ranked = state.players.slice().sort(function(a, b) {
-    if (b.chips !== a.chips) return b.chips - a.chips;
-    return a.position - b.position;
-  });
-  var html = '';
-  for (var i = 0; i < ranked.length; i++) {
-    var p = ranked[i];
-    html += '<div class="rank-row">';
-    html += '<span class="rank-number">' + (i + 1) + '</span>';
-    html += '<span class="rank-name">' + esc(p.name) + (p.id === myPlayerId ? ' <span class="text-xs text-dim">你</span>' : '') + '</span>';
-    html += '<span class="rank-score">' + p.chips + '</span>';
-    html += '</div>';
-  }
-  document.getElementById(elementId).innerHTML = html || '<div class="log-text" style="padding:16px">等待玩家加入</div>';
-}
-
-function showRaise() {
-  document.getElementById('raise-control').style.display = 'flex';
-  document.getElementById('raise-amount').value = state.bigBlind;
-}
-
-function adjustRaise(dir) {
-  var inp = document.getElementById('raise-amount');
-  var step = state.bigBlind;
-  var me = state.players.find(function(p) { return p.id === myPlayerId; });
-  inp.value = Math.max(step, Math.min(parseInt(inp.value || step) + dir * step, me ? me.chips : step));
-}
-
-function doRaise() {
-  var amount = parseInt(document.getElementById('raise-amount').value) || state.bigBlind;
-  doAction('raise', amount);
-}
-
-function doAction(action, amount) {
-  if (!ws) return;
-  ws.send(JSON.stringify({ type: 'action', action: action, amount: amount }));
-  document.getElementById('action-bar').classList.remove('visible');
-}
-
-function startHand() {
-  if (!ws) return;
-  ws.send(JSON.stringify({ type: 'startHand' }));
-}
-
-function nextRound() {
-  if (!ws) return;
-  ws.send(JSON.stringify({ type: 'nextRound' }));
-}
-
-function renderShowdown() {
-  var ab = document.getElementById('action-buttons');
-  var rc = document.getElementById('raise-control');
-  rc.style.display = 'none';
-
-  var activePlayers = state.players.filter(function(p) { return !p.isFolded && p.isActive; });
-  document.getElementById('action-hint').textContent = '选择获胜者';
-
-  var btns = '';
-  for (var i = 0; i < activePlayers.length; i++) {
-    var p = activePlayers[i];
-    var sel = selectedWinners.has(p.id);
-    btns += '<button class="btn btn-xs ' + (sel ? 'btn-primary' : 'btn-secondary') + '" onclick="toggleWinner(\'' + p.id + '\')">' + esc(p.name) + '</button>';
-  }
-  btns += '<button class="btn btn-xs btn-primary" onclick="confirmWinners()"' + (selectedWinners.size === 0 ? ' style="opacity:.4"' : '') + '>确认</button>';
-  ab.innerHTML = btns;
-}
-
-function toggleWinner(id) {
-  if (selectedWinners.has(id)) selectedWinners.delete(id);
-  else selectedWinners.add(id);
-  render();
-}
-
-function confirmWinners() {
-  if (selectedWinners.size === 0) { toast('请选择获胜者'); return; }
-  if (!ws) return;
-  ws.send(JSON.stringify({ type: 'endHand', winnerIds: Array.from(selectedWinners) }));
-  selectedWinners.clear();
-}
-
-function isRoundComplete() {
-  if (!state) return false;
-  var actionable = state.players.filter(function(p) { return !p.isFolded && p.isActive && !p.isAllIn; });
-  if (actionable.length === 0) return true;
-  return actionable.every(function(p) { return p.hasActedThisRound && p.currentBet === state.currentBet; });
-}
-
-function updateSettings() {
-  if (!ws) return;
-  var sb = parseInt(document.getElementById('set-sb').value) || 10;
-  var bb = parseInt(document.getElementById('set-bb').value) || 20;
-  ws.send(JSON.stringify({ type: 'updateSettings', settings: { smallBlind: sb, bigBlind: bb } }));
-}
-
-function esc(s) {
-  var d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
-
-window.addEventListener('beforeunload', function() {
-  intentionalClose = true;
-  if (ws) ws.close();
-});
-
-window.addEventListener('keydown', function(event) {
-  if (event.key === 'Escape') closeTopModal();
-});
-</script>
+<script type="module" src="./scripts/app.js?v=2"></script>
 </body>
 </html>
