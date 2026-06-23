@@ -189,6 +189,19 @@ render();
 - **URL**: `https://poker-scorer.1956133426lpy.workers.dev`
 - **Version ID**: `ef8fba08-d4c0-4c5e-9c5e-100caf19fc46`
 
-### 10.6 清理声明
+### 10.6 线上回归问题与修复
 
-两次测试的临时目录 `mobile-test-tmp/`（含 Playwright、Chromium、截图、脚本）及本地服务进程均已清除。本报告为唯一保留的测试产物。
+**问题**：上线后发现“创建新牌局后无法进入房间”。
+
+**根因**：`socket.js` 的 `persistIdentity()` 函数内部调用了 `savePlayer()`，但 `savePlayer` 未从 `./storage.js` 导入。`onState` 收到服务端状态后调用 `persistIdentity` 时抛出 `savePlayer is not defined`，导致后续 `render()` 与 `renderActionBar()` 没有执行，页面停留在首页，分享弹窗也无法出现。
+
+**修复**：`import { deviceId, getSavedPlayer, savePlayer } from './storage.js';`
+
+**验证**：使用 Playwright 在远端真实环境复现并确认无控制台报错，创建房间后正确进入大厅并显示“房间已创建”弹窗。
+
+**修复后部署**：
+- **Version ID**: `bc7e505f-8485-4115-b0ca-8a68eb38810f`
+
+### 10.7 清理声明
+
+各次测试的临时目录 `mobile-test-tmp/`（含 Playwright、Chromium、截图、脚本）及本地服务进程均已清除。本报告为唯一保留的测试产物。
