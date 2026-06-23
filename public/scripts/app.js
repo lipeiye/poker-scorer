@@ -1,11 +1,11 @@
 // 应用入口：粘合所有模块。负责状态流转、消息路由、庆祝弹窗、连接联动、SW 注册。
 // 不持有复杂逻辑，只把 socket 的消息分发给 render / feedback / ui。
-import { $, toast, showView, showModal, closeModal, closeTopModal, renderConnDot, applyDeepLink, installKeyboardAdapter } from './ui.js?v=2';
-import { connect, disconnect, send, onMessage, onConn, isConnected, getMyPlayerId, setMyPlayerId, persistIdentity, getCurrentRoomId, getCurrentName } from './socket.js?v=2';
-import { deviceId, getSavedPlayer } from './storage.js?v=2';
-import { render, renderActionBar, isRoundComplete, clearSelectedWinners } from './render.js?v=2';
-import { sendAction, onFoldClick, doRaise, showRaise, adjustRaise, onToggleWinner, confirmWinners, startHand, nextRound, updateSettings, vibrate } from './actions.js?v=2';
-import { notifyMyTurn, unlockAudio } from './feedback.js?v=2';
+import { $, toast, showView, showModal, closeModal, closeTopModal, renderConnDot, applyDeepLink, installKeyboardAdapter } from './ui.js?v=3';
+import { connect, disconnect, onMessage, onConn, getMyPlayerId, setMyPlayerId, persistIdentity, getCurrentRoomId, getCurrentName } from './socket.js?v=3';
+import { deviceId, getSavedPlayer } from './storage.js?v=3';
+import { render, renderActionBar, clearSelectedWinners, toggleWinner } from './render.js?v=3';
+import { sendAction, onFoldClick, doRaise, showRaise, adjustRaise, confirmWinners, startHand, nextRound, updateSettings } from './actions.js?v=3';
+import { notifyMyTurn, unlockAudio } from './feedback.js?v=3';
 
 // 应用级状态
 let state = null;
@@ -52,16 +52,42 @@ window.addEventListener('pagehide', (e) => {
   if (!e.persisted) disconnect();
 });
 
-// 把按钮处理函数挂到 window，供 index.html 内联 onclick 调用（保持 HTML 简单）
+// 把 HTML 内联 onclick 需要的函数挂到 window（保持 HTML 简单）
 Object.assign(window, {
   createRoom, joinRoom, leaveTable,
   copyCurrentRoomCode, shareCurrentRoom,
   openNameModal, closeNameModal, submitName,
   closeShareModal, closeWinnerModal,
   startHand, nextRound, updateSettings,
-  showRaise: () => state && showRaise(state, myPlayerId),
-  adjustRaise: (d) => state && adjustRaise(d, state, myPlayerId),
   doRaise, onFoldClick,
+});
+
+// ---------- 操作栏事件委托 ----------
+// render.js 只负责渲染按钮的 data-action / data-winner 属性，
+// 所有点击事件在这里统一分发，避免每次 state 更新都重建闭包和事件处理器。
+$('#action-bar').addEventListener('click', (e) => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  const action = btn.dataset.action;
+  const winner = btn.dataset.winner;
+  const dir = parseInt(btn.dataset.dir || '0', 10);
+
+  if (winner) {
+    toggleWinner(winner);
+    if (state) renderActionBar(state, myPlayerId);
+    return;
+  }
+
+  switch (action) {
+    case 'fold': onFoldClick(); break;
+    case 'check': sendAction('check'); break;
+    case 'call': sendAction('call'); break;
+    case 'raise': if (state) showRaise(state); break;
+    case 'adjust-raise': if (state) adjustRaise(dir, state, myPlayerId); break;
+    case 'do-raise': doRaise(); break;
+    case 'next-round': nextRound(); break;
+    case 'confirm-winners': confirmWinners(); break;
+  }
 });
 
 // ---------- 状态处理 ----------
@@ -74,7 +100,7 @@ function onState(s) {
     persistIdentity(getCurrentRoomId(), s.yourPlayerId, getCurrentName());
   }
   render(s, myPlayerId);
-  renderActionBar(s, myPlayerId, actionHandlers());
+  renderActionBar(s, myPlayerId);
   maybeShowWinnerCelebration(s);
   notifyMyTurnIfNeeded(s, prev);
   if (hostSharePending) {
@@ -94,8 +120,8 @@ function onDisconnected() {
 }
 
 function notifyMyTurnIfNeeded(s, prev) {
-  const me = s.players.find((p) => p.id === myPlayerId);
   const myIdx = s.players.findIndex((p) => p.id === myPlayerId);
+  const me = myIdx >= 0 ? s.players[myIdx] : null;
   const isMyTurn = s.currentPlayerIndex === myIdx && me && !me.isFolded && !me.isAllIn
     && s.round !== 'showdown' && s.round !== 'waiting';
   notifyMyTurn(isMyTurn, document.visibilityState === 'visible');
@@ -107,21 +133,6 @@ function maybeShowWinnerCelebration(s) {
   if (sessionStorage.getItem('pk_celebrated_win') === key) return;
   sessionStorage.setItem('pk_celebrated_win', key);
   setTimeout(() => showModal('winner-modal'), 180);
-}
-
-/** 给 renderActionBar 的操作回调集合 */
-function actionHandlers() {
-  return {
-    onFold: onFoldClick,
-    onCheck: () => sendAction('check'),
-    onCall: () => sendAction('call'),
-    onShowRaise: () => showRaise(state, myPlayerId),
-    onNextRound: nextRound,
-    onToggleWinner: (id) => onToggleWinner(id, () => {
-      if (state) renderActionBar(state, myPlayerId, actionHandlers());
-    }),
-    onConfirmWinners: confirmWinners,
-  };
 }
 
 // ---------- 首页入口 ----------

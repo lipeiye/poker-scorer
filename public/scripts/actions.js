@@ -1,9 +1,9 @@
 // 玩家操作层：弃牌/过牌/跟注/加注/下一轮/摊牌选择/盲注设置。
 // 集中处理：触觉反馈(M7)、弃牌二次确认(M8)、加注金额步进。
 // 不直接持状态，所有操作通过 socket.send 发出。
-import { $ } from './ui.js?v=2';
-import { send } from './socket.js?v=2';
-import { clearSelectedWinners, toggleWinner, getSelectedWinners } from './render.js?v=2';
+import { $ } from './ui.js?v=3';
+import { send } from './socket.js?v=3';
+import { clearSelectedWinners, getSelectedWinners } from './render.js?v=3';
 
 // ---------- M7: 触觉反馈 ----------
 export function vibrate(pattern) {
@@ -13,7 +13,7 @@ export function vibrate(pattern) {
 }
 
 // ---------- 加注控制 ----------
-export function showRaise(state, myPlayerId) {
+export function showRaise(state) {
   $('#raise-control').style.display = 'flex';
   $('#raise-amount').value = state.bigBlind;
   vibrate(8);
@@ -85,11 +85,6 @@ export function nextRound() {
 }
 
 // ---------- 摊牌选择 ----------
-export function onToggleWinner(id, rerender) {
-  toggleWinner(id, rerender);
-  vibrate(8);
-}
-
 export function confirmWinners() {
   const ids = getSelectedWinners();
   if (ids.length === 0) return;

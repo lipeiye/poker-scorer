@@ -20,7 +20,7 @@
 <link rel="apple-touch-icon" href="./apple-touch-icon.png">
 <link rel="preload" href="./assets/hero-d943dda7.jpg" as="image" type="image/jpeg" fetchpriority="high">
 
-<link rel="stylesheet" href="./styles.css?v=2">
+<link rel="stylesheet" href="./styles.css?v=3">
 </head>
 <body>
 
@@ -118,10 +118,10 @@
     <div class="log-text text-sm" id="action-hint"></div>
     <div class="action-row" id="action-buttons"></div>
     <div class="raise-control" id="raise-control" style="display:none">
-      <button class="btn btn-xs btn-secondary" onclick="adjustRaise(-1)">-</button>
+      <button class="btn btn-xs btn-secondary" data-action="adjust-raise" data-dir="-1">-</button>
       <input id="raise-amount" type="number" value="0" min="0" inputmode="numeric">
-      <button class="btn btn-xs btn-secondary" onclick="adjustRaise(1)">+</button>
-      <button class="btn btn-xs btn-primary" onclick="doRaise()">加注</button>
+      <button class="btn btn-xs btn-secondary" data-action="adjust-raise" data-dir="1">+</button>
+      <button class="btn btn-xs btn-primary" data-action="do-raise">加注</button>
     </div>
   </div>
 </div>
@@ -170,6 +170,6 @@
 
 <div class="toast" id="toast"></div>
 
-<script type="module" src="./scripts/app.js?v=2"></script>
+<script type="module" src="./scripts/app.js?v=3"></script>
 </body>
 </html>

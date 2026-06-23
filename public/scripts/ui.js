@@ -71,43 +71,36 @@ export function applyDeepLink() {
   return null;
 }
 
-/** M13: iOS/Android 键盘弹起时，把 fixed 底部操作栏切到 absolute 贴可视区底部，避免被遮挡。 */
+/** M13/M15: iOS/Android 键盘适配。
+ *  - 输入框聚焦时给 body 加 keyboard-open，调整首页/弹窗布局并滚动到可视区
+ *  - 键盘升起时给操作栏加 keyboard 类，fixed 切 absolute 贴可视区底部
+ */
 export function installKeyboardAdapter() {
   const bar = $('#action-bar');
   if (window.visualViewport && bar) {
     const vv = window.visualViewport;
-    // 以 visualViewport 高度 < layout 视口 - 100 判定键盘弹起（阈值容错）
     const layoutH = window.innerHeight;
-    const update = () => {
-      const keyboardUp = layoutH - vv.height > 100;
-      bar.classList.toggle('keyboard', keyboardUp);
-      if (keyboardUp) bar.style.bottom = '0';
-    };
+    const update = () => bar.classList.toggle('keyboard', layoutH - vv.height > 100);
     vv.addEventListener('resize', update);
     vv.addEventListener('scroll', update);
   }
 
-  // M15: 输入框聚焦时给 body 加 keyboard-open，调整首页/弹窗布局并滚动到可视区
-  const inputs = document.querySelectorAll('input');
+  // 事件委托：兼容未来动态添加的输入框
   let focusTimer = null;
-  const onFocus = (e) => {
+  document.body.addEventListener('focusin', (e) => {
+    if (e.target.tagName !== 'INPUT') return;
     if (focusTimer) clearTimeout(focusTimer);
     document.body.classList.add('keyboard-open');
-    const el = e.target;
     focusTimer = setTimeout(() => {
-      el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      e.target.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     }, 280);
-  };
-  const onBlur = () => {
+  });
+  document.body.addEventListener('focusout', () => {
     if (focusTimer) clearTimeout(focusTimer);
     focusTimer = setTimeout(() => {
       if (document.activeElement?.tagName !== 'INPUT') {
         document.body.classList.remove('keyboard-open');
       }
     }, 100);
-  };
-  inputs.forEach((input) => {
-    input.addEventListener('focus', onFocus);
-    input.addEventListener('blur', onBlur);
   });
 }
