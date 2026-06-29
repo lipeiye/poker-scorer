@@ -20,7 +20,7 @@
 <link rel="apple-touch-icon" href="./apple-touch-icon.png">
 <link rel="preload" href="./assets/hero-d943dda7.jpg" as="image" type="image/jpeg" fetchpriority="high">
 
-<link rel="stylesheet" href="./styles.css?v=6">
+<link rel="stylesheet" href="./styles.css?v=7">
 </head>
 <body>
 
@@ -86,6 +86,7 @@
 </div>
 
 <div id="view-game" class="view">
+  <div class="turn-banner" id="turn-banner" aria-live="assertive">轮到你</div>
   <div class="top-bar">
     <button class="nav-button" onclick="leaveTable()" aria-label="返回首页">‹</button>
     <div class="room-meta">
@@ -170,6 +171,6 @@
 
 <div class="toast" id="toast"></div>
 
-<script type="module" src="./scripts/app.js?v=6"></script>
+<script type="module" src="./scripts/app.js?v=7"></script>
 </body>
 </html>

@@ -1,20 +1,54 @@
 // 渲染层：根据后端 state 渲染大厅 / 游戏界面 / 摊牌 / 庆祝。
 // 只读 state、只写 DOM，不直接发消息（操作由 app.js 通过事件委托处理）。
-import { $, esc, showView } from './ui.js?v=6';
+import { $, esc, showView } from './ui.js?v=7';
 
-let selectedWinners = new Set();
+/** 统一的"是否轮到我"判定（4 字段谓词），供 renderGame / renderActionBar / app.js 复用。
+ *  与后端 game-room.ts advanceTurn 的跳过条件同源。 */
+export function isMyTurn(state, myPlayerId) {
+  if (!state) return false;
+  const myIdx = state.players.findIndex((p) => p.id === myPlayerId);
+  const me = myIdx >= 0 ? state.players[myIdx] : null;
+  return state.currentPlayerIndex === myIdx
+    && !!me && !me.isFolded && me.isActive && !me.isAllIn && !me.isSittingOut
+    && state.round !== 'showdown' && state.round !== 'waiting';
+}
+
+// ---------- 摊牌排名分档状态 ----------
+// selectedTiers: 已确认的名次档位数组（tiers[0]=第1名/可并列，tiers[1]=第2名…）
+// currentTier:   正在选择的当前档位（Set），还没"下一档"提交。
+let selectedTiers = [];
+let currentTier = new Set();
 
 export function clearSelectedWinners() {
-  selectedWinners.clear();
+  selectedTiers = [];
+  currentTier.clear();
 }
 
+/** 切换当前档位中某玩家的选中态 */
 export function toggleWinner(id) {
-  if (selectedWinners.has(id)) selectedWinners.delete(id);
-  else selectedWinners.add(id);
+  if (currentTier.has(id)) currentTier.delete(id);
+  else currentTier.add(id);
 }
 
-export function getSelectedWinners() {
-  return Array.from(selectedWinners);
+/** 当前档位提交，进入下一档 */
+export function advanceTier() {
+  if (currentTier.size === 0) return false;
+  selectedTiers.push(Array.from(currentTier));
+  currentTier.clear();
+  return true;
+}
+
+/** 撤销最近一档（回退到上一档继续编辑） */
+export function undoTier() {
+  const last = selectedTiers.pop();
+  if (last) currentTier = new Set(last);
+}
+
+/** 取已确认 + 当前档位拼成的完整 tiers（用于发送） */
+export function getTiers() {
+  const tiers = selectedTiers.slice();
+  if (currentTier.size > 0) tiers.push(Array.from(currentTier));
+  return tiers;
 }
 
 /** 主渲染入口：按 round 切换视图 */
@@ -115,7 +149,7 @@ function renderGame(state, myPlayerId) {
       p.isSittingOut ? '<span class="player-tag tag-offline">暂离</span>' : (!p.isConnected ? '<span class="player-tag tag-offline">离线</span>' : ''),
     ].join('');
 
-    const isTurn = i === state.currentPlayerIndex && !p.isFolded && !p.isAllIn && !p.isSittingOut && state.round !== 'showdown' && state.round !== 'waiting';
+    const isTurn = i === state.currentPlayerIndex && !p.isFolded && p.isActive && !p.isAllIn && !p.isSittingOut && state.round !== 'showdown' && state.round !== 'waiting';
     const cls = [
       'player-item',
       p.id === myPlayerId ? 'is-you' : '',
@@ -157,7 +191,7 @@ function renderLeaderboard(elementId, state, myPlayerId) {
 
 // ---------- 操作栏渲染 ----------
 export function renderActionBar(state, myPlayerId) {
-  const { me, myIdx } = buildPlayerMap(state.players, myPlayerId);
+  const { me } = buildPlayerMap(state.players, myPlayerId);
   const actionBar = $('#action-bar');
 
   if (state.round === 'showdown') {
@@ -174,8 +208,7 @@ export function renderActionBar(state, myPlayerId) {
     return;
   }
 
-  const isMyTurn = state.currentPlayerIndex === myIdx && me && !me.isFolded && !me.isAllIn && !me.isSittingOut && state.round !== 'showdown' && state.round !== 'waiting';
-  if (!isMyTurn) {
+  if (!isMyTurn(state, myPlayerId)) {
     actionBar.classList.remove('visible');
     return;
   }
@@ -190,25 +223,47 @@ export function renderActionBar(state, myPlayerId) {
     ? '<button class="btn btn-sm btn-primary" data-action="check">过牌</button>'
     : `<button class="btn btn-sm btn-primary" data-action="call">跟注 ${Math.min(toCall, me.chips)}</button>`;
 
+  // All-in 按钮：醒目，直接全押全部筹码（无需打开加注控件慢慢调）。
+  const allInBtn = me.chips > 0
+    ? `<button class="btn btn-sm btn-allin" data-action="all-in">全押 ${me.chips}</button>`
+    : '';
+
   $('#action-buttons').innerHTML = `
     <button class="btn btn-sm btn-danger" data-action="fold">弃牌</button>
     ${callBtn}
     <button class="btn btn-sm btn-secondary" data-action="raise">加注</button>
+    ${allInBtn}
   `;
 
   $('#raise-amount').value = state.bigBlind;
+  $('#raise-amount').min = state.bigBlind;
+  $('#raise-amount').max = me.chips;
 }
+
+
 
 function renderShowdown(state, myPlayerId) {
   $('#raise-control').style.display = 'none';
-  // 候选获胜者：未弃牌、未挂机（挂机者未实际争夺，不参与选胜）
+  // 候选：未弃牌、未挂机（挂机者未实际争夺，不参与选胜）
   const activePlayers = state.players.filter((p) => !p.isFolded && !p.isSittingOut);
-  $('#action-hint').textContent = '选择获胜者';
+  const tierIndex = selectedTiers.length; // 0 = 第1名
+  const tierLabel = tierIndex === 0 ? '第 1 名（可并列选平手）' : `第 ${tierIndex + 1} 名`;
 
-  const confirmDisabled = selectedWinners.size === 0 ? ' style="opacity:.4"' : '';
-  $('#action-buttons').innerHTML = activePlayers.map((p) => `
-    <button class="btn btn-xs ${selectedWinners.has(p.id) ? 'btn-primary' : 'btn-secondary'}" data-winner="${p.id}">${esc(p.name)}</button>
-  `).join('') + `<button class="btn btn-xs btn-primary" data-action="confirm-winners"${confirmDisabled}>确认</button>`;
+  $('#action-hint').textContent = `摊牌 · 选择${tierLabel}`;
+
+  const confirmDisabled = currentTier.size === 0 && selectedTiers.length === 0 ? ' style="opacity:.4;pointer-events:none"' : '';
+  const nextDisabled = currentTier.size === 0 ? ' style="opacity:.4;pointer-events:none"' : '';
+  const undoBtn = selectedTiers.length > 0
+    ? '<button class="btn btn-xs btn-secondary" data-action="undo-tier">上一档</button>'
+    : '';
+
+  $('#action-buttons').innerHTML = activePlayers.map((p) => {
+    const sel = currentTier.has(p.id);
+    return `<button class="btn btn-xs ${sel ? 'btn-primary' : 'btn-secondary'}" data-winner="${p.id}">${esc(p.name)}</button>`;
+  }).join('')
+    + `<button class="btn btn-xs btn-secondary" data-action="next-tier"${nextDisabled}>下一档</button>`
+    + undoBtn
+    + `<button class="btn btn-xs btn-primary" data-action="confirm-tiers"${confirmDisabled}>确认结算</button>`;
 }
 
 /** 本轮下注是否完成（前后端同源逻辑） */

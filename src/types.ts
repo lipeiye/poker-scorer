@@ -55,6 +55,15 @@ export interface GameState {
   expiresAt: number;
   /** 私有设备令牌映射，不会发送给客户端 */
   playerDevices: Record<string, string>;
+  /** 最近一次结算拆出的主池/边池明细，供前端展示"谁赢了多少"。
+   *  仅在 showdown→waiting 转换瞬间有意义，下一手开始时清空。 */
+  sidePots?: SidePot[];
+}
+
+/** 单个底池层级（主池 / 边池）的结算结果 */
+export interface SidePot {
+  amount: number;
+  winnerIds: string[];
 }
 
 /** 客户端 → 服务端消息 */
@@ -65,7 +74,12 @@ export interface ClientMessage {
   deviceId?: string;
   action?: Action;
   amount?: number;
+  /** 旧字段：单层胜者，向后兼容。服务端会包装成 [[...winnerIds]] 单档。 */
   winnerIds?: string[];
+  /** 摊牌按牌力从强到弱的排名分档。
+   *  tiers[0] = 第 1 名（可并列），tiers[1] = 第 2 名……
+   *  未在任一档位的玩家视为更低名次，不参与争夺边池。 */
+  tiers?: string[][];
   settings?: Partial<Pick<GameState, 'smallBlind' | 'bigBlind'>>;
 }
 
@@ -92,6 +106,8 @@ export interface PublicGameState {
   lastActor: string;
   lastWinnerIds: string[];
   communityCards: number;
+  /** 最近一次结算的主池/边池明细（仅结算后短暂存在） */
+  sidePots?: SidePot[];
   /** 你的玩家 ID（仅发送给该连接） */
   yourPlayerId?: string;
 }

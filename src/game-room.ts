@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
-import type { Player, Round, Action, GameState, ClientMessage, PublicGameState } from './types';
+import type { Player, Action, GameState, ClientMessage, PublicGameState } from './types';
 import { DEFAULT_CHIPS, DEFAULT_SMALL_BLIND, DEFAULT_BIG_BLIND, ROOM_TTL_MS, getRoundName } from './types';
 import type { Env } from './env';
 
@@ -10,18 +10,15 @@ interface SocketAttachment {
 export class GameRoom extends DurableObject<Env> {
   private game!: GameState;
   private connections: Map<WebSocket, string>;
-  private lastResetDate: string;
   private expired: boolean;
   private readonly ready: Promise<void>;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.connections = new Map();
-    this.lastResetDate = '';
     this.expired = false;
     this.ready = this.ctx.blockConcurrencyWhile(async () => {
       const saved = await this.ctx.storage.get<GameState>('game');
-      const savedDate = await this.ctx.storage.get<string>('lastResetDate');
 
       if (!saved) return;
 
@@ -29,7 +26,7 @@ export class GameRoom extends DurableObject<Env> {
       this.game.expiresAt ||= this.game.createdAt + ROOM_TTL_MS;
       this.game.playerDevices ||= {};
       this.game.lastWinnerIds ||= [];
-      this.lastResetDate = savedDate || '';
+      this.game.sidePots = [];
       this.game.players.forEach(player => {
         player.isConnected = false;
       });
@@ -45,10 +42,10 @@ export class GameRoom extends DurableObject<Env> {
         }
       }
 
-      await this.checkDailyReset();
       const currentAlarm = await this.ctx.storage.getAlarm();
-      if (currentAlarm === null) {
-        await this.ctx.storage.setAlarm(Math.max(Date.now() + 1_000, this.game.expiresAt));
+      // 仅在确实有存档对局时补设闹钟；已销毁（无 game）的房间不重新装弹。
+      if (currentAlarm === null && this.game) {
+        await this.ctx.storage.setAlarm(this.nextCleanupOrExpiry());
       }
     });
   }
@@ -74,56 +71,41 @@ export class GameRoom extends DurableObject<Env> {
         createdAt: Date.now(),
         expiresAt: Date.now() + ROOM_TTL_MS,
         playerDevices: {},
+        sidePots: [],
       };
-      await this.ctx.storage.setAlarm(this.game.expiresAt);
-    }
-
-    await this.checkDailyReset();
-  }
-
-  private async checkDailyReset(): Promise<void> {
-    const resetDate = this.currentResetDate();
-    if (this.lastResetDate && resetDate > this.lastResetDate) {
-      this.game = {
-        roomId: this.game.roomId,
-        players: [],
-        round: 'waiting',
-        pot: 0,
-        currentBet: 0,
-        dealerIndex: 0,
-        currentPlayerIndex: -1,
-        smallBlind: DEFAULT_SMALL_BLIND,
-        bigBlind: DEFAULT_BIG_BLIND,
-        handNumber: 0,
-        lastAction: '每日自动重置',
-        lastActor: '',
-        lastWinnerIds: [],
-        communityCards: 0,
-        createdAt: Date.now(),
-        expiresAt: this.game.expiresAt,
-        playerDevices: {},
-      };
-      this.lastResetDate = resetDate;
-      await this.ctx.storage.put({
-        lastResetDate: resetDate,
-        game: this.game,
-      });
-    } else if (!this.lastResetDate) {
-      this.lastResetDate = resetDate;
-      await this.ctx.storage.put('lastResetDate', resetDate);
+      await this.ctx.storage.setAlarm(this.nextCleanupOrExpiry());
     }
   }
 
-  private currentResetDate(now = Date.now()): string {
-    const parts = new Intl.DateTimeFormat('en-US', {
-      timeZone: 'Asia/Shanghai',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    }).formatToParts(new Date(now - 4 * 60 * 60 * 1000));
-    const value = (type: Intl.DateTimeFormatPartTypes) =>
-      parts.find(part => part.type === type)?.value || '';
-    return `${value('year')}-${value('month')}-${value('day')}`;
+  /**
+   * 计算从 now 到「下一个美东纽约时间 7:00」的毫秒数。
+   * 用 America/New_York 时区，自动遵循 DST（夏令时），DST 切换日最多有 ~1h 误差，
+   * 对于"每天清理一次"的用途完全可接受。
+   */
+  private nextCleanupMs(now = Date.now()): number {
+    const NY_TZ = 'America/New_York';
+    const wallParts = new Intl.DateTimeFormat('en-US', {
+      timeZone: NY_TZ,
+      hourCycle: 'h23',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    }).formatToParts(new Date(now));
+    const get = (t: string) => Number(wallParts.find(p => p.type === t)?.value ?? 0);
+    const wallHour = get('hour');
+    // 当前 ET 墙钟到今天 7:00 还剩多少毫秒（若已过 7 点则为负）
+    const elapsedTodayMs =
+      ((wallHour * 60 + get('minute')) * 60 + get('second')) * 1000;
+    const sevenAmMs = 7 * 60 * 60 * 1000;
+    let delta = sevenAmMs - elapsedTodayMs;
+    if (delta <= 0) delta += 24 * 60 * 60 * 1000;
+    return delta;
+  }
+
+  /** 取「下一个 ET 7:00」与「7 天 TTL 过期」中较早者，作为 alarm 触发时间。 */
+  private nextCleanupOrExpiry(now = Date.now()): number {
+    const cleanup = now + this.nextCleanupMs(now);
+    const expiry = this.game ? this.game.expiresAt : now + ROOM_TTL_MS;
+    return Math.max(now + 1_000, Math.min(cleanup, expiry));
   }
 
   private async save(): Promise<void> {
@@ -148,16 +130,20 @@ export class GameRoom extends DurableObject<Env> {
     const wsMarker = pathParts.indexOf('ws');
     const roomId = pathParts[(roomMarker >= 0 ? roomMarker : wsMarker) + 1] || '';
 
+    // 已被清理/过期的房间：对所有查询一律返回不存在，避免内存里残留的 this.game 误报。
+    if (this.expired) {
+      if (url.pathname.endsWith('/exists') && request.method === 'GET') {
+        return Response.json({ exists: false }, { headers: corsHeaders });
+      }
+      return Response.json({ message: '房间已过期' }, { status: 410, headers: corsHeaders });
+    }
+
     if (url.pathname.endsWith('/exists') && request.method === 'GET') {
       const saved = this.game || await this.ctx.storage.get<GameState>('game');
       return Response.json({
         exists: Boolean(saved && (saved.expiresAt || saved.createdAt + ROOM_TTL_MS) > Date.now()),
         createdAt: saved?.createdAt,
       }, { headers: corsHeaders });
-    }
-
-    if (this.expired) {
-      return Response.json({ message: '房间已过期' }, { status: 410, headers: corsHeaders });
     }
 
     if (!this.game) {
@@ -188,7 +174,7 @@ export class GameRoom extends DurableObject<Env> {
       if (Number.isFinite(expiresAt) && expiresAt > Date.now()) {
         this.game.expiresAt = expiresAt;
       }
-      await this.ctx.storage.setAlarm(this.game.expiresAt);
+      await this.ctx.storage.setAlarm(this.nextCleanupOrExpiry());
       await this.save();
       return Response.json({
         roomId: this.game.roomId,
@@ -223,7 +209,7 @@ export class GameRoom extends DurableObject<Env> {
           await this.handleNextRound(ws);
           break;
         case 'endHand':
-          await this.handleEndHand(ws, msg.winnerIds || []);
+          await this.handleEndHand(ws, msg.tiers, msg.winnerIds);
           break;
         case 'updateSettings':
           await this.handleSettings(ws, msg.settings || {});
@@ -363,6 +349,25 @@ export class GameRoom extends DurableObject<Env> {
     if (this.game.currentPlayerIndex === playerIndex) {
       this.advanceTurn();
     }
+
+    // 检查是否仅剩一人争夺底池（断线不改变争夺者集合，但需兜底）。
+    this.checkSoloSurvivor();
+  }
+
+  /** 检查是否只剩一个争夺者，若是则直接 award + 进入 showdown */
+  private checkSoloSurvivor(): void {
+    const contesting = this.game.players.filter(p => !p.isFolded);
+    if (contesting.length === 1) {
+      this.awardToSoloSurvivor(contesting[0].id, '其余玩家弃牌/断线');
+    }
+  }
+
+  private awardToSoloSurvivor(winnerId: string, reason: string): void {
+    const winner = this.game.players.find(p => p.id === winnerId);
+    this.game.round = 'showdown';
+    this.awardPotsByTiers([[winnerId]]);
+    this.game.lastAction = `${winner?.name || '未知'} 获胜（${reason}）`;
+    this.broadcast();
   }
 
   async alarm(): Promise<void> {
@@ -372,15 +377,12 @@ export class GameRoom extends DurableObject<Env> {
       return;
     }
 
-    if (Date.now() < this.game.expiresAt) {
-      await this.ctx.storage.setAlarm(this.game.expiresAt);
-      return;
-    }
-
+    // alarm 无论是「每日 ET 7:00 清理」还是「7 天 TTL 过期」，都执行同一套销毁：
+    // 关闭所有连接、从房间目录移除、清空存储。次日玩家需重新创建房间。
     const roomId = this.game.roomId;
     this.expired = true;
     for (const ws of this.ctx.getWebSockets()) {
-      try { ws.close(1000, '房间已过期'); } catch { /* already closed */ }
+      try { ws.close(1000, '房间已清理'); } catch { /* already closed */ }
     }
     await this.env.ROOM_REGISTRY.getByName(roomId).remove();
     await this.ctx.storage.deleteAll();
@@ -444,7 +446,7 @@ export class GameRoom extends DurableObject<Env> {
       }
 
       case 'raise': {
-        const raiseAmount = amount || this.game.bigBlind;
+        const raiseAmount = Math.max(1, amount || this.game.bigBlind);
         const totalNeeded = toCall + raiseAmount;
 
         if (totalNeeded >= player.chips) {
@@ -460,7 +462,8 @@ export class GameRoom extends DurableObject<Env> {
           }
           this.game.lastAction = `${player.name} All-in ${allIn}`;
         } else {
-          if (raiseAmount < this.game.bigBlind && this.game.currentBet > 0) {
+          // 无条件 enforce 最低下注/加注额 >= bigBlind
+          if (raiseAmount < this.game.bigBlind) {
             this.sendError(ws, `最小加注额为 ${this.game.bigBlind}`);
             return;
           }
@@ -481,16 +484,19 @@ export class GameRoom extends DurableObject<Env> {
 
     // 仍在争夺底池的玩家 = 未弃牌（断线挂机者仍占座、仍争夺，不算退出）。
     // 只有真正 fold 才算退出争夺，避免"一人断线→另一人直接赢"。
-    const activePlayers = this.game.players.filter(p => !p.isFolded);
-    if (activePlayers.length === 1) {
-      this.game.round = 'showdown';
-      this.awardPot([activePlayers[0].id]);
-      this.game.lastAction = `${activePlayers[0].name} 获胜（其余玩家弃牌）`;
-      this.broadcast();
+    const contestingPlayers = this.game.players.filter(p => !p.isFolded);
+    if (contestingPlayers.length === 1) {
+      this.awardToSoloSurvivor(contestingPlayers[0].id, '其余玩家弃牌');
       return;
     }
 
     this.advanceTurn();
+
+    // 全体 All-in 检测：无人可行动时自动推进到摊牌，避免无意义的手动点击。
+    if (this.isRoundComplete() && this.allContestingAreAllIn()) {
+      await this.autoAdvanceToShowdown();
+      return;
+    }
 
     if (this.isRoundComplete()) {
       this.game.lastAction += ' | 本轮下注完成，请点击"下一轮"';
@@ -528,6 +534,27 @@ export class GameRoom extends DurableObject<Env> {
     return actionable.every(
       p => p.hasActedThisRound && p.currentBet === this.game.currentBet
     );
+  }
+
+  /** 所有未弃牌玩家是否都已 All-in（无人可在后续街道行动） */
+  private allContestingAreAllIn(): boolean {
+    const contesting = this.game.players.filter(p => !p.isFolded);
+    return contesting.length > 0 && contesting.every(p => p.isAllIn);
+  }
+
+  /** 全体 All-in 时快速推进到摊牌 */
+  private async autoAdvanceToShowdown(): Promise<void> {
+    // 跳过中间街道，直接到摊牌
+    this.game.communityCards = 5;
+    // 重置 round betting 状态
+    this.game.players.forEach(p => {
+      p.currentBet = 0;
+      p.hasActedThisRound = false;
+    });
+    this.game.currentBet = 0;
+    this.game.round = 'showdown';
+    this.game.lastAction = '全体 All-in，直接进入摊牌 — 请选择获胜者';
+    this.broadcast();
   }
 
   private async handleNextRound(ws: WebSocket): Promise<void> {
@@ -582,6 +609,7 @@ export class GameRoom extends DurableObject<Env> {
 
     this.game.handNumber++;
     this.game.lastWinnerIds = [];
+    this.game.sidePots = [];
     this.game.round = 'preflop';
     this.game.pot = 0;
     this.game.currentBet = 0;
@@ -641,7 +669,8 @@ export class GameRoom extends DurableObject<Env> {
     bb.currentBet = bbAmt;
     bb.totalBet = bbAmt;
     this.game.pot += bbAmt;
-    this.game.currentBet = bbAmt;
+    // currentBet 锁定为 bigBlind（即使 BB 实际付不起全额），保证 toCall 计算基准正确。
+    this.game.currentBet = this.game.bigBlind;
     if (bb.chips <= 0) bb.isAllIn = true;
 
     this.game.lastAction = `盲注: SB ${sbAmt} | BB ${bbAmt}`;
@@ -709,51 +738,127 @@ export class GameRoom extends DurableObject<Env> {
     }
   }
 
-  private normalizeDealerIndex(): void {
-    if (this.game.players.length === 0) {
-      this.game.dealerIndex = 0;
-      return;
-    }
-    this.game.dealerIndex = Math.min(this.game.dealerIndex, this.game.players.length - 1);
-    this.game.players.forEach((player, index) => {
-      player.position = (index - this.game.dealerIndex + this.game.players.length) % this.game.players.length;
-    });
-  }
-
-  private async handleEndHand(_ws: WebSocket, winnerIds: string[]): Promise<void> {
+  private async handleEndHand(_ws: WebSocket, tiers: string[][] | undefined, winnerIds: string[] | undefined): Promise<void> {
     if (this.game.round !== 'showdown') {
+      this.sendToAll('当前不在摊牌阶段');
       return;
     }
-    if (winnerIds.length === 0) {
+
+    // 统一成排名分档：tiers 优先；旧客户端只发 winnerIds 时包装成单层（第 1 名并列）。
+    let normalized: string[][];
+    if (tiers && tiers.length > 0) {
+      normalized = tiers.filter(t => Array.isArray(t) && t.length > 0);
+    } else if (winnerIds && winnerIds.length > 0) {
+      normalized = [winnerIds];
+    } else {
+      this.sendToAll('请至少选择一位获胜者');
+      return;
+    }
+    if (normalized.length === 0) {
       this.sendToAll('请至少选择一位获胜者');
       return;
     }
 
-    this.awardPot(winnerIds);
+    // 校验：所有 id 必须存在、未弃牌、且不在多个档位重复。
+    const seen = new Set<string>();
+    for (const tier of normalized) {
+      for (const id of tier) {
+        if (seen.has(id)) {
+          this.sendToAll('同一玩家不能出现在多个名次档位');
+          return;
+        }
+        seen.add(id);
+        const p = this.game.players.find(pp => pp.id === id);
+        if (!p || p.isFolded) {
+          this.sendToAll('所选胜者无效');
+          return;
+        }
+      }
+    }
+
+    this.awardPotsByTiers(normalized);
     this.game.round = 'waiting';
     this.game.lastAction = '手牌结束 — 点击【开始新一手牌】继续';
     this.broadcast();
   }
 
-  private awardPot(winnerIds: string[]): void {
-    const pot = this.game.pot;
-    if (pot <= 0 || winnerIds.length === 0) return;
-    this.game.lastWinnerIds = winnerIds.slice();
+  /**
+   * 按排名分档结算主池/边池。
+   *
+   * tiers[i] = 第 (i+1) 名（可并列，表示平手）。牌力从强到弱排列。
+   * 算法：按每个玩家的 totalBet 把底池拆成若干层（level），每层只由投入达到该
+   * level 的未弃牌玩家争夺；在该层的合格玩家中，找 tiers 里第一个（名次最高）
+   * 有人落在该层的档位，该档位的合格成员平分这一层。
+   *
+   * 例：A 全押 100、B 全押 500、C 跟 500。levels=[100,500]。
+   *  - level 100 层 = 100×3 = 300，合格者 {A,B,C}。若 tiers=[[A],[B]]，
+   *    第 1 名 A 在合格者内 → A 独得 300。
+   *  - level 500 层 = 400×2 = 800，合格者 {B,C}。第 1 名 A 不在；第 2 名 B 在 → B 独得 800。
+   */
+  private awardPotsByTiers(tiers: string[][]): void {
+    const players = this.game.players;
+    const contributors = players.filter(p => p.totalBet > 0);
+    if (contributors.length === 0 || this.game.pot <= 0) return;
 
-    const share = Math.floor(pot / winnerIds.length);
-    const remainder = pot - share * winnerIds.length;
+    const levelSet = new Set<number>();
+    for (const p of contributors) levelSet.add(p.totalBet);
+    const levels = Array.from(levelSet).sort((a, b) => a - b);
 
-    const names: string[] = [];
-    for (let i = 0; i < winnerIds.length; i++) {
-      const winner = this.game.players.find(p => p.id === winnerIds[i]);
-      if (winner) {
-        const amt = share + (i === 0 ? remainder : 0);
-        winner.chips += amt;
-        names.push(winner.name);
+    const pots: { amount: number; winnerIds: string[] }[] = [];
+    const winnerNames: string[] = [];
+    const allWinnerIds = new Set<string>();
+    let prevLevel = 0;
+
+    for (const level of levels) {
+      const layerAmount = level - prevLevel;
+      prevLevel = level;
+      if (layerAmount <= 0) continue;
+
+      // 投入达到该 level 的玩家都为这一层贡献了 layerAmount。
+      const contributorsAtLayer = contributors.filter(p => p.totalBet >= level);
+      const potTotal = layerAmount * contributorsAtLayer.length;
+      if (potTotal <= 0) continue;
+
+      // 合格争夺者：未弃牌（已弃牌者的钱留在池里但不能赢）。
+      const eligibleIds = new Set(contributorsAtLayer.filter(p => !p.isFolded).map(p => p.id));
+      if (eligibleIds.size === 0) continue; // 该层无人有资格（理论上不该发生），跳过
+
+      // 在 tiers 中找第一个（名次最高）有成员落在 eligible 的档位。
+      let winningIds: string[] = [];
+      for (const tier of tiers) {
+        const matched = tier.filter(id => eligibleIds.has(id));
+        if (matched.length > 0) {
+          winningIds = matched;
+          break;
+        }
       }
+      if (winningIds.length === 0) continue; // 没有排名覆盖该层，理论上跳过
+
+      // 平分（余数给第一个）。
+      const share = Math.floor(potTotal / winningIds.length);
+      const remainder = potTotal - share * winningIds.length;
+      for (let i = 0; i < winningIds.length; i++) {
+        const winner = players.find(p => p.id === winningIds[i]);
+        if (winner) {
+          winner.chips += share + (i === 0 ? remainder : 0);
+          allWinnerIds.add(winner.id);
+          if (!winnerNames.includes(winner.name)) winnerNames.push(winner.name);
+        }
+      }
+      pots.push({ amount: potTotal, winnerIds: winningIds.slice() });
     }
 
-    this.game.lastAction = `${names.join('、')} 赢得 ${pot} 筹码`;
+    this.game.lastWinnerIds = Array.from(allWinnerIds);
+    this.game.sidePots = pots;
+    const breakdown = pots.map(p => {
+      const names = p.winnerIds
+        .map(id => players.find(pp => pp.id === id)?.name || '?')
+        .join('、');
+      return `${names} ${p.amount}`;
+    }).join(' | ');
+    this.game.lastAction = pots.length > 1
+      ? `${breakdown}（已按主池/边池结算）`
+      : `${winnerNames.join('、')} 赢得 ${this.game.pot} 筹码`;
     this.game.pot = 0;
   }
 
@@ -828,6 +933,7 @@ export class GameRoom extends DurableObject<Env> {
       lastActor: this.game.lastActor,
       lastWinnerIds: this.game.lastWinnerIds,
       communityCards: this.game.communityCards,
+      sidePots: this.game.sidePots,
     };
   }
 }

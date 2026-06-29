@@ -1,10 +1,10 @@
 // 极简 Service Worker：仅缓存首屏壳（index.html + 静态资源），
 // 让首屏秒开、断网时也能看到壳而非浏览器默认断网页。游戏数据走 WS 必须联网。
 // 版本号变更会触发重新缓存；不拦截任何网络请求（network-first，仅回退到缓存）。
-const CACHE = 'pk-shell-v6';
+const CACHE = 'pk-shell-v7';
 const SHELL = [
   './',
-  './styles.css?v=6',
+  './styles.css?v=7',
   './manifest.webmanifest',
   './favicon.png',
   './icon-192.png',

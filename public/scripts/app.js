@@ -1,11 +1,11 @@
 // 应用入口：粘合所有模块。负责状态流转、消息路由、庆祝弹窗、连接联动、SW 注册。
 // 不持有复杂逻辑，只把 socket 的消息分发给 render / feedback / ui。
-import { $, toast, showView, showModal, closeModal, closeTopModal, renderConnDot, applyDeepLink, installKeyboardAdapter } from './ui.js?v=6';
-import { connect, disconnect, onMessage, onConn, getMyPlayerId, setMyPlayerId, persistIdentity, getCurrentRoomId, getCurrentName } from './socket.js?v=6';
-import { deviceId, getSavedPlayer } from './storage.js?v=6';
-import { render, renderActionBar, clearSelectedWinners, toggleWinner } from './render.js?v=6';
-import { sendAction, onFoldClick, doRaise, showRaise, adjustRaise, confirmWinners, startHand, nextRound, updateSettings } from './actions.js?v=6';
-import { notifyMyTurn, unlockAudio } from './feedback.js?v=6';
+import { $, toast, showView, showModal, closeModal, closeTopModal, renderConnDot, applyDeepLink, installKeyboardAdapter } from './ui.js?v=7';
+import { connect, disconnect, onMessage, onConn, getMyPlayerId, setMyPlayerId, persistIdentity, getCurrentRoomId, getCurrentName } from './socket.js?v=7';
+import { deviceId, getSavedPlayer } from './storage.js?v=7';
+import { render, renderActionBar, clearSelectedWinners, toggleWinner, isMyTurn } from './render.js?v=7';
+import { sendAction, onFoldClick, doRaise, showRaise, adjustRaise, onRaiseInput, doAllIn, confirmTiers, nextTier, prevTier, startHand, nextRound, updateSettings } from './actions.js?v=7';
+import { notifyMyTurn } from './feedback.js?v=7';
 
 // 应用级状态
 let state = null;
@@ -16,11 +16,6 @@ let hostSharePending = false;
 applyDeepLink();           // M6: 深链预填
 installKeyboardAdapter();  // M13/M15: iOS/Android 键盘适配（操作栏 + 输入框）
 registerServiceWorker();   // M14: SW 缓存首屏
-
-// 用户首次交互解锁音频（浏览器自动播放策略要求）
-for (const ev of ['pointerdown', 'keydown']) {
-  window.addEventListener(ev, unlockAudio, { once: true });
-}
 
 // 顶栏连接状态点联动（M11）
 onConn((connState) => {
@@ -82,12 +77,20 @@ $('#action-bar').addEventListener('click', (e) => {
     case 'fold': onFoldClick(btn); break;
     case 'check': sendAction('check'); break;
     case 'call': sendAction('call'); break;
-    case 'raise': if (state) showRaise(state); break;
+    case 'raise': if (state) showRaise(state, myPlayerId); break;
     case 'adjust-raise': if (state) adjustRaise(dir, state, myPlayerId); break;
     case 'do-raise': doRaise(); break;
+    case 'all-in': if (state) doAllIn(state, myPlayerId); break;
     case 'next-round': nextRound(); break;
-    case 'confirm-winners': confirmWinners(); break;
+    case 'next-tier': nextTier(); if (state) renderActionBar(state, myPlayerId); break;
+    case 'undo-tier': prevTier(); if (state) renderActionBar(state, myPlayerId); break;
+    case 'confirm-tiers': confirmTiers(); break;
   }
+});
+
+// 加注输入框实时更新总额预览（玩家直接键入数字时）
+$('#raise-amount').addEventListener('input', () => {
+  if (state) onRaiseInput(state, myPlayerId);
 });
 
 // ---------- 状态处理 ----------
@@ -120,11 +123,8 @@ function onDisconnected() {
 }
 
 function notifyMyTurnIfNeeded(s, prev) {
-  const myIdx = s.players.findIndex((p) => p.id === myPlayerId);
-  const me = myIdx >= 0 ? s.players[myIdx] : null;
-  const isMyTurn = s.currentPlayerIndex === myIdx && me && !me.isFolded && !me.isAllIn
-    && s.round !== 'showdown' && s.round !== 'waiting';
-  notifyMyTurn(isMyTurn, document.visibilityState === 'visible');
+  const myTurn = isMyTurn(s, myPlayerId);
+  notifyMyTurn(myTurn, document.visibilityState === 'visible');
 }
 
 function maybeShowWinnerCelebration(s) {

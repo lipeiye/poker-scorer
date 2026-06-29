@@ -2,6 +2,10 @@
 
 > 本文件由 Claude Code 每次会话自动载入。目的：让你**不用重新探索**就能动手，省 token、提缓存命中。
 > 维护原则见文末"为什么这份文件存在"。结构性事实放这里；时效性记录写 [WORKLOG.md](./WORKLOG.md)。
+>
+> 📚 **配套文档**：
+> - [docs/TECHNICAL.md](./docs/TECHNICAL.md) — 完整技术文档（架构、协议、流程）
+> - [docs/ISSUES.md](./docs/ISSUES.md) — 问题与修复手册（含耦合地图、修改影响链）
 
 ## 是什么
 实时德州扑克**计分器**（不发牌，只记筹码 / 盲注 / 行动轮转），部署在 Cloudflare Workers Free Tier。

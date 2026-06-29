@@ -1,6 +1,6 @@
 // WebSocket 连接管理：建连、join、断线重连、连接状态广播、心跳保活。
 // 不直接碰 DOM（状态展示由 ui.js 订阅 onConn 完成），只对外暴露 send/事件。
-import { deviceId, getSavedPlayer, savePlayer } from './storage.js?v=6';
+import { deviceId, getSavedPlayer, savePlayer } from './storage.js?v=7';
 
 /** @typedef {'connected'|'connecting'|'offline'} ConnState */
 

@@ -1,6 +1,13 @@
 # Poker Scorer
 
-部署在 Cloudflare Workers Free Tier 的实时德州扑克计分器。
+部署在 Cloudflare Workers Free Tier 的实时德州扑克计分器（不发牌、不洗牌，只记筹码 / 盲注 / 行动轮转）。物理牌桌上的人打牌，本应用负责记录每手牌的筹码流动、盲注轮转和行动顺序。
+
+## 文档
+
+| 文档 | 内容 |
+|------|------|
+| [README.md](./README.md) | 本文件：项目概览与快速上手 |
+| [docs/TECHNICAL.md](./docs/TECHNICAL.md) | 完整技术文档：架构、协议、关键逻辑、不变量、已知问题 |
 
 ## 架构
 
@@ -37,3 +44,19 @@ new_sqlite_classes = ["GameRoom"]
 ## Free Tier 容量边界
 
 Cloudflare 的免费额度会变化，部署前应以官方文档为准。当前架构不会绕过平台每日总额度；它解决的是后端类型兼容、房间内一致性和房间间横向扩展。静态资源不进入 Worker 时不消耗 Worker 请求额度。
+
+## 项目结构
+
+```
+poker-scorer/
+├── src/                # 后端 TypeScript（Cloudflare Worker + Durable Objects）
+│   ├── index.ts        # HTTP 路由
+│   ├── game-room.ts    # GameRoom DO（核心游戏逻辑）
+│   ├── room-registry.ts# 房号注册 DO
+│   ├── types.ts        # 类型、常量、工具函数
+│   └── env.ts          # 环境绑定类型
+├── public/             # 前端静态资源（零构建 ES Module + 原生 CSS，PWA）
+├── test/               # Vitest 测试
+├── docs/TECHNICAL.md   # 完整技术文档
+└── README.md
+```

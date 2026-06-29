@@ -1,9 +1,9 @@
-// 玩家操作层：弃牌/过牌/跟注/加注/下一轮/摊牌选择/盲注设置。
-// 集中处理：触觉反馈(M7)、弃牌二次确认(M8)、加注金额步进。
+// 玩家操作层：弃牌/过牌/跟注/加注/全押/下一轮/摊牌排名分档/盲注设置。
+// 集中处理：触觉反馈(M7)、弃牌二次确认(M8)、加注金额步进、加注总额实时预览。
 // 不直接持状态，所有操作通过 socket.send 发出。
-import { $ } from './ui.js?v=6';
-import { send } from './socket.js?v=6';
-import { clearSelectedWinners, getSelectedWinners } from './render.js?v=6';
+import { $, toast } from './ui.js?v=7';
+import { send } from './socket.js?v=7';
+import { clearSelectedWinners, getTiers, advanceTier, undoTier } from './render.js?v=7';
 
 // ---------- M7: 触觉反馈 ----------
 export function vibrate(pattern) {
@@ -13,10 +13,32 @@ export function vibrate(pattern) {
 }
 
 // ---------- 加注控制 ----------
-export function showRaise(state) {
+export function showRaise(state, myPlayerId) {
   $('#raise-control').style.display = 'flex';
-  $('#raise-amount').value = state.bigBlind;
+  const me = state.players.find((p) => p.id === myPlayerId);
+  const max = me ? me.chips : state.bigBlind;
+  const inp = $('#raise-amount');
+  inp.value = state.bigBlind;
+  inp.max = max;
+  updateRaiseHint(state, myPlayerId);
   vibrate(8);
+}
+
+/** 加注总额实时预览：把"增量"语义翻译成玩家能看懂的"加注到 X / 总投入 Y"。 */
+function updateRaiseHint(state, myPlayerId) {
+  const inp = $('#raise-amount');
+  const me = state.players.find((p) => p.id === myPlayerId);
+  if (!inp || !me) return;
+  const raiseAmount = Math.max(0, parseInt(inp.value) || 0);
+  const toCall = Math.max(0, state.currentBet - (me.currentBet || 0));
+  const totalNeeded = toCall + raiseAmount;          // 本次要掏出的筹码
+  const newCurrentBet = state.currentBet + raiseAmount; // 加注后全桌需跟到的线
+  const hint = $('#action-hint');
+  if (hint) {
+    hint.textContent = raiseAmount > 0
+      ? `加注 +${raiseAmount}｜本次投入 ${totalNeeded}｜线到 ${newCurrentBet}`
+      : (toCall > 0 ? `需跟注 ${toCall}` : '轮到你操作');
+  }
 }
 
 export function adjustRaise(dir, state, myPlayerId) {
@@ -24,14 +46,35 @@ export function adjustRaise(dir, state, myPlayerId) {
   const step = state.bigBlind;
   const me = state.players.find((p) => p.id === myPlayerId);
   const cur = parseInt(inp.value || step);
-  // 下限 = 大盲（与后端最小加注一致，见 A2），上限 = 我的全部筹码
+  const min = parseInt(inp.min) || step;
+  // 下限 = 大盲，上限 = 我的全部筹码
   const max = me ? me.chips : step;
-  inp.value = Math.max(step, Math.min(cur + dir * step, max));
+  inp.value = Math.max(min, Math.min(cur + dir * step, max));
+  updateRaiseHint(state, myPlayerId);
+}
+
+/** 输入框直接改动时（input 事件）刷新总额预览 */
+export function onRaiseInput(state, myPlayerId) {
+  updateRaiseHint(state, myPlayerId);
 }
 
 export function doRaise() {
-  const amount = parseInt($('#raise-amount').value) || 0;
+  const inp = $('#raise-amount');
+  const amount = parseInt(inp.value) || 0;
+  const min = parseInt(inp.min) || 0;
+  if (min > 0 && amount < min) {
+    toast(`最低加注 ${min} 筹码`);
+    return;
+  }
   sendAction('raise', amount);
+}
+
+// ---------- 全押 ----------
+export function doAllIn(state, myPlayerId) {
+  const me = state.players.find((p) => p.id === myPlayerId);
+  if (!me || me.chips <= 0) return;
+  // 服务端 raise 分支：totalNeeded >= chips 自动走 all-in，无需新协议。
+  sendAction('raise', me.chips);
 }
 
 // ---------- M8: 弃牌二次确认（防误触） ----------
@@ -88,11 +131,21 @@ export function nextRound() {
   send({ type: 'nextRound' });
 }
 
-// ---------- 摊牌选择 ----------
-export function confirmWinners() {
-  const ids = getSelectedWinners();
-  if (ids.length === 0) return;
-  send({ type: 'endHand', winnerIds: ids });
+// ---------- 摊牌排名分档 ----------
+/** 把当前档位提交并入下一档 */
+export function nextTier() {
+  advanceTier();
+}
+
+export function prevTier() {
+  undoTier();
+}
+
+/** 结算：把已选的全部档位作为 tiers 发给服务端按主池/边池分配 */
+export function confirmTiers() {
+  const tiers = getTiers();
+  if (tiers.length === 0) return;
+  send({ type: 'endHand', tiers });
   clearSelectedWinners();
 }
 
