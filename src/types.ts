@@ -13,6 +13,9 @@ export interface Player {
   isFolded: boolean;
   isActive: boolean;
   isAllIn: boolean;
+  /** 断线挂机：仍占座、保盲注位次，但本轮不行动、不付筹码（纯跳过）。
+   *  手牌进行中重连仍保持挂机，等下一手发牌才复活。 */
+  isSittingOut: boolean;
   /** 当前轮下注额 */
   currentBet: number;
   /** 整手牌总下注额 */

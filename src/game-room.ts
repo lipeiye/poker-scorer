@@ -287,15 +287,22 @@ export class GameRoom extends DurableObject<Env> {
 
     if (player) {
       player.isConnected = true;
-      if (!player.isFolded) player.isActive = true;
+      // 手牌进行中重连：保持挂机(isSittingOut)，本手牌仍纯跳过，等下一手发牌才复活。
+      // 仅在等待区(waiting)重连才立即清除挂机。
+      if (this.game.round === 'waiting') {
+        player.isSittingOut = false;
+        if (!player.isFolded) player.isActive = true;
+      }
+      // 先注册新连接，再关闭旧连接：这样旧连接的 webSocketClose 回调里
+      // hasAnotherConnection 一定为 true，不会把刚重连的玩家误判离线/挂机。
+      this.connections.set(ws, player.id);
+      ws.serializeAttachment({ playerId: player.id } satisfies SocketAttachment);
       for (const socket of this.ctx.getWebSockets()) {
         if (socket !== ws && this.playerIdFor(socket) === player.id) {
           this.connections.delete(socket);
           try { socket.close(1000, '已在新连接中恢复'); } catch { /* already closed */ }
         }
       }
-      this.connections.set(ws, player.id);
-      ws.serializeAttachment({ playerId: player.id } satisfies SocketAttachment);
       if (deviceId) this.game.playerDevices[player.id] = deviceId;
       this.game.lastAction = `${player.name} 重新连接`;
     } else {
@@ -316,6 +323,7 @@ export class GameRoom extends DurableObject<Env> {
         isFolded: false,
         isActive: true,
         isAllIn: false,
+        isSittingOut: false,
         currentBet: 0,
         totalBet: 0,
         hasActedThisRound: false,
@@ -345,11 +353,16 @@ export class GameRoom extends DurableObject<Env> {
     player.isConnected = false;
     if (this.game.round === 'waiting') return;
 
+    // 手牌进行中断线：改为「坐出挂机」——保持座位、盲注位次与底池权益不变，
+    // 不 fold、不出局、不消耗筹码。轮到他时由 advanceTurn 自动纯跳过。
+    // 本手牌内重连仍保持挂机，等下一手发牌（handleStartHand）才复活。
+    player.isSittingOut = true;
+
+    // 若断线者正是当前行动者，把行动权交给下一位可行动者。
     const playerIndex = this.game.players.indexOf(player);
-    const wasCurrentPlayer = this.game.currentPlayerIndex === playerIndex;
-    player.isActive = false;
-    player.isFolded = true;
-    if (wasCurrentPlayer) this.advanceTurn();
+    if (this.game.currentPlayerIndex === playerIndex) {
+      this.advanceTurn();
+    }
   }
 
   async alarm(): Promise<void> {
@@ -466,7 +479,9 @@ export class GameRoom extends DurableObject<Env> {
     player.hasActedThisRound = true;
     this.game.lastActor = player.name;
 
-    const activePlayers = this.game.players.filter(p => !p.isFolded && p.isActive);
+    // 仍在争夺底池的玩家 = 未弃牌（断线挂机者仍占座、仍争夺，不算退出）。
+    // 只有真正 fold 才算退出争夺，避免"一人断线→另一人直接赢"。
+    const activePlayers = this.game.players.filter(p => !p.isFolded);
     if (activePlayers.length === 1) {
       this.game.round = 'showdown';
       this.awardPot([activePlayers[0].id]);
@@ -497,7 +512,7 @@ export class GameRoom extends DurableObject<Env> {
     for (let i = 1; i <= n; i++) {
       const idx = (this.game.currentPlayerIndex + i) % n;
       const p = this.game.players[idx];
-      if (!p.isFolded && p.isActive && !p.isAllIn) {
+      if (!p.isFolded && p.isActive && !p.isAllIn && !p.isSittingOut) {
         this.game.currentPlayerIndex = idx;
         return;
       }
@@ -507,7 +522,7 @@ export class GameRoom extends DurableObject<Env> {
 
   private isRoundComplete(): boolean {
     const actionable = this.game.players.filter(
-      p => !p.isFolded && p.isActive && !p.isAllIn
+      p => !p.isFolded && p.isActive && !p.isAllIn && !p.isSittingOut
     );
     if (actionable.length === 0) return true;
     return actionable.every(
@@ -585,6 +600,8 @@ export class GameRoom extends DurableObject<Env> {
       p.totalBet = 0;
       p.hasActedThisRound = false;
       p.position = -1;
+      // 下一手开始：在线者清除挂机并参与；离线者继续挂机占座、纯跳过。
+      p.isSittingOut = !p.isConnected;
     });
     this.assignPositions();
 
@@ -601,7 +618,14 @@ export class GameRoom extends DurableObject<Env> {
     const sbIdx = activeCount === 2
       ? this.game.dealerIndex
       : this.nextActiveIndex(this.game.dealerIndex);
-    const bbIdx = this.nextActiveIndex(sbIdx);
+    let bbIdx = this.nextActiveIndex(sbIdx);
+
+    // 防御：并发重连曾导致 isActive 状态瞬时错乱，使 nextActiveIndex 两次
+    // 返回同一玩家，于是 SB 与 BB 压在一个人身上。这里强制 SB≠BB。
+    if (bbIdx === sbIdx || bbIdx === -1) {
+      bbIdx = this.nextDifferentActiveIndex(sbIdx, sbIdx);
+    }
+    if (bbIdx === -1 || bbIdx === sbIdx) return;
 
     const sb = this.game.players[sbIdx];
     const sbAmt = Math.min(this.game.smallBlind, sb.chips);
@@ -640,7 +664,7 @@ export class GameRoom extends DurableObject<Env> {
 
     for (let i = 0; i < this.game.players.length; i++) {
       const idx = (startIdx + i) % this.game.players.length;
-      if (!this.game.players[idx].isFolded && this.game.players[idx].isActive && !this.game.players[idx].isAllIn) {
+      if (!this.game.players[idx].isFolded && this.game.players[idx].isActive && !this.game.players[idx].isAllIn && !this.game.players[idx].isSittingOut) {
         this.game.currentPlayerIndex = idx;
         return;
       }
@@ -654,6 +678,22 @@ export class GameRoom extends DurableObject<Env> {
 
     for (let offset = 1; offset <= count; offset++) {
       const index = (fromIndex + offset + count) % count;
+      if (this.game.players[index].isActive) return index;
+    }
+    return -1;
+  }
+
+  /**
+   * 从 fromIndex 之后找下一个活跃、且不等于 excludeIndex 的玩家下标。
+   * 用于并发重连导致状态错乱时的盲注兜底，保证 SB≠BB。
+   */
+  private nextDifferentActiveIndex(fromIndex: number, excludeIndex: number): number {
+    const count = this.game.players.length;
+    if (count === 0) return -1;
+
+    for (let offset = 1; offset <= count; offset++) {
+      const index = (fromIndex + offset + count) % count;
+      if (index === excludeIndex) continue;
       if (this.game.players[index].isActive) return index;
     }
     return -1;

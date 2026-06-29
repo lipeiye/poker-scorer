@@ -1,11 +1,11 @@
 // 应用入口：粘合所有模块。负责状态流转、消息路由、庆祝弹窗、连接联动、SW 注册。
 // 不持有复杂逻辑，只把 socket 的消息分发给 render / feedback / ui。
-import { $, toast, showView, showModal, closeModal, closeTopModal, renderConnDot, applyDeepLink, installKeyboardAdapter } from './ui.js?v=3';
-import { connect, disconnect, onMessage, onConn, getMyPlayerId, setMyPlayerId, persistIdentity, getCurrentRoomId, getCurrentName } from './socket.js?v=3';
-import { deviceId, getSavedPlayer } from './storage.js?v=3';
-import { render, renderActionBar, clearSelectedWinners, toggleWinner } from './render.js?v=3';
-import { sendAction, onFoldClick, doRaise, showRaise, adjustRaise, confirmWinners, startHand, nextRound, updateSettings } from './actions.js?v=3';
-import { notifyMyTurn, unlockAudio } from './feedback.js?v=3';
+import { $, toast, showView, showModal, closeModal, closeTopModal, renderConnDot, applyDeepLink, installKeyboardAdapter } from './ui.js?v=6';
+import { connect, disconnect, onMessage, onConn, getMyPlayerId, setMyPlayerId, persistIdentity, getCurrentRoomId, getCurrentName } from './socket.js?v=6';
+import { deviceId, getSavedPlayer } from './storage.js?v=6';
+import { render, renderActionBar, clearSelectedWinners, toggleWinner } from './render.js?v=6';
+import { sendAction, onFoldClick, doRaise, showRaise, adjustRaise, confirmWinners, startHand, nextRound, updateSettings } from './actions.js?v=6';
+import { notifyMyTurn, unlockAudio } from './feedback.js?v=6';
 
 // 应用级状态
 let state = null;
@@ -79,7 +79,7 @@ $('#action-bar').addEventListener('click', (e) => {
   }
 
   switch (action) {
-    case 'fold': onFoldClick(); break;
+    case 'fold': onFoldClick(btn); break;
     case 'check': sendAction('check'); break;
     case 'call': sendAction('call'); break;
     case 'raise': if (state) showRaise(state); break;

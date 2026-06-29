@@ -1,12 +1,15 @@
 // WebSocket 连接管理：建连、join、断线重连、连接状态广播、心跳保活。
 // 不直接碰 DOM（状态展示由 ui.js 订阅 onConn 完成），只对外暴露 send/事件。
-import { deviceId, getSavedPlayer, savePlayer } from './storage.js?v=3';
+import { deviceId, getSavedPlayer, savePlayer } from './storage.js?v=6';
 
 /** @typedef {'connected'|'connecting'|'offline'} ConnState */
 
 // ---------- 常量 ----------
-const PING_INTERVAL = 15000;   // 15s 发一次 ping
-const PONG_TIMEOUT = 10000;    // 10s 内没收到 pong 认为连接假死
+// 保活窗口设计为 ~5 分钟：移动端切后台时浏览器会节流定时器与网络栈，
+// 早期 15s/10s 的节奏会在后台迅速判死连接、引发重连风暴。
+// 现在每 60s 一次心跳，连续 4 分钟（≈4 跳）收不到 pong 才认定假死。
+const PING_INTERVAL = 60000;   // 60s 发一次 ping
+const PONG_TIMEOUT = 240000;   // 4 分钟没收到 pong 才认为连接假死
 const MAX_RECONNECT_DELAY = 30000; // 最大退避 30s
 
 // 单例状态（本应用同一时刻只有一个房间连接，用模块级变量即可）
@@ -188,9 +191,16 @@ function stopHeartbeat() {
 // ---------- 页面可见性：切回前台时立即重连 ----------
 
 if (typeof document !== 'undefined') {
-  // 切回前台立即重连
+  // 切回前台：连接还在就补发一次 ping 立刻校验是否假死；已断则立即重连。
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden && currentRoomId && !intentionalClose && !isConnected()) {
+    if (document.hidden || !currentRoomId || intentionalClose) return;
+    if (isConnected()) {
+      send({ type: 'ping' });
+      clearTimeout(pongTimer);
+      pongTimer = setTimeout(() => {
+        try { ws && ws.close(); } catch { /* ignore */ }
+      }, PONG_TIMEOUT);
+    } else {
       reconnectNow();
     }
   });

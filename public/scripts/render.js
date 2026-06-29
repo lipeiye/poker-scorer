@@ -1,6 +1,6 @@
 // 渲染层：根据后端 state 渲染大厅 / 游戏界面 / 摊牌 / 庆祝。
 // 只读 state、只写 DOM，不直接发消息（操作由 app.js 通过事件委托处理）。
-import { $, esc, showView } from './ui.js?v=3';
+import { $, esc, showView } from './ui.js?v=6';
 
 let selectedWinners = new Set();
 
@@ -112,10 +112,10 @@ function renderGame(state, myPlayerId) {
       i === sbIdx ? '<span class="player-tag tag-sb">SB</span>' : '',
       i === bbIdx ? '<span class="player-tag tag-bb">BB</span>' : '',
       p.isAllIn ? '<span class="player-tag tag-allin">ALL</span>' : '',
-      !p.isConnected ? '<span class="player-tag tag-offline">离线</span>' : '',
+      p.isSittingOut ? '<span class="player-tag tag-offline">暂离</span>' : (!p.isConnected ? '<span class="player-tag tag-offline">离线</span>' : ''),
     ].join('');
 
-    const isTurn = i === state.currentPlayerIndex && !p.isFolded && !p.isAllIn && state.round !== 'showdown' && state.round !== 'waiting';
+    const isTurn = i === state.currentPlayerIndex && !p.isFolded && !p.isAllIn && !p.isSittingOut && state.round !== 'showdown' && state.round !== 'waiting';
     const cls = [
       'player-item',
       p.id === myPlayerId ? 'is-you' : '',
@@ -174,7 +174,7 @@ export function renderActionBar(state, myPlayerId) {
     return;
   }
 
-  const isMyTurn = state.currentPlayerIndex === myIdx && me && !me.isFolded && !me.isAllIn && state.round !== 'showdown' && state.round !== 'waiting';
+  const isMyTurn = state.currentPlayerIndex === myIdx && me && !me.isFolded && !me.isAllIn && !me.isSittingOut && state.round !== 'showdown' && state.round !== 'waiting';
   if (!isMyTurn) {
     actionBar.classList.remove('visible');
     return;
@@ -201,7 +201,8 @@ export function renderActionBar(state, myPlayerId) {
 
 function renderShowdown(state, myPlayerId) {
   $('#raise-control').style.display = 'none';
-  const activePlayers = state.players.filter((p) => !p.isFolded && p.isActive);
+  // 候选获胜者：未弃牌、未挂机（挂机者未实际争夺，不参与选胜）
+  const activePlayers = state.players.filter((p) => !p.isFolded && !p.isSittingOut);
   $('#action-hint').textContent = '选择获胜者';
 
   const confirmDisabled = selectedWinners.size === 0 ? ' style="opacity:.4"' : '';
@@ -213,7 +214,7 @@ function renderShowdown(state, myPlayerId) {
 /** 本轮下注是否完成（前后端同源逻辑） */
 export function isRoundComplete(state) {
   if (!state) return false;
-  const actionable = state.players.filter((p) => !p.isFolded && p.isActive && !p.isAllIn);
+  const actionable = state.players.filter((p) => !p.isFolded && p.isActive && !p.isAllIn && !p.isSittingOut);
   if (actionable.length === 0) return true;
   return actionable.every((p) => p.hasActedThisRound && p.currentBet === state.currentBet);
 }

@@ -1,9 +1,9 @@
 // 玩家操作层：弃牌/过牌/跟注/加注/下一轮/摊牌选择/盲注设置。
 // 集中处理：触觉反馈(M7)、弃牌二次确认(M8)、加注金额步进。
 // 不直接持状态，所有操作通过 socket.send 发出。
-import { $ } from './ui.js?v=3';
-import { send } from './socket.js?v=3';
-import { clearSelectedWinners, getSelectedWinners } from './render.js?v=3';
+import { $ } from './ui.js?v=6';
+import { send } from './socket.js?v=6';
+import { clearSelectedWinners, getSelectedWinners } from './render.js?v=6';
 
 // ---------- M7: 触觉反馈 ----------
 export function vibrate(pattern) {
@@ -35,15 +35,18 @@ export function doRaise() {
 }
 
 // ---------- M8: 弃牌二次确认（防误触） ----------
-let foldArmed = false;
+// 注意：弃牌按钮由 renderActionBar 用 data-action="fold" 渲染（无固定 id），
+// 因此由 app.js 的事件委托把被点击的按钮元素传入，不能按 id 查找。
+let foldArmed = null;          // 当前处于武装确认态的按钮元素
 let foldArmTimer = null;
 
-export function onFoldClick() {
-  const btn = $('#btn-fold');
+export function onFoldClick(btn) {
   if (!btn) return;
-  if (!foldArmed) {
-    // 第一次点：武装确认态，2 秒后自动撤销
-    foldArmed = true;
+  if (foldArmed !== btn) {
+    // 第一次点该按钮：武装确认态，2 秒后自动撤销
+    resetFold();
+    foldArmed = btn;
+    btn.dataset.originalText = btn.textContent;
     btn.textContent = '再点一次确认';
     btn.classList.remove('btn-danger');
     btn.classList.add('btn-primary');
@@ -57,15 +60,16 @@ export function onFoldClick() {
 }
 
 function resetFold() {
-  foldArmed = false;
-  clearTimeout(foldArmTimer);
-  const btn = $('#btn-fold');
-  if (btn) {
-    btn.textContent = '弃牌';
-    btn.classList.add('btn-danger');
-    btn.classList.remove('btn-primary');
+  if (foldArmed && foldArmed.isConnected) {
+    if (foldArmed.dataset.originalText != null) foldArmed.textContent = foldArmed.dataset.originalText;
+    foldArmed.classList.add('btn-danger');
+    foldArmed.classList.remove('btn-primary');
+    delete foldArmed.dataset.originalText;
   }
+  foldArmed = null;
+  clearTimeout(foldArmTimer);
 }
+
 
 // ---------- 通用发送 ----------
 export function sendAction(action, amount) {

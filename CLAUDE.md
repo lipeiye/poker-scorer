@@ -10,10 +10,12 @@
 单个 Worker：静态前端走 Static Assets；`/api/rooms/:id/*` 与 `/ws/:id` 路由到「每房间一个 SQLite-backed Durable Object `GameRoom`」——房内操作串行、房间间横向扩展；WebSocket 用 Hibernation API，玩家身份存在 socket attachment。
 
 ## 关键文件（认函数名，行号仅提示）
-- `src/game-room.ts` — 全部游戏逻辑(DO)。热点：`setFirstToAct()`（行动起点·最易改错）、`advanceTurn()`、`postBlinds()`、`handleNextRound()`、`handleAction()`、`isRoundComplete()`、`nextActiveIndex()`。
+- `src/game-room.ts` — 全部游戏逻辑(DO)。热点：`setFirstToAct()`（行动起点·最易改错）、`advanceTurn()`、`postBlinds()`、`handleNextRound()`、`handleAction()`、`isRoundComplete()`、`nextActiveIndex()`、`markDisconnected()`（断线→坐出挂机，见下「断线坐出不变量」）、`handleJoin()`（重连收敛：先注册新连接再关旧，防误判离线）。
 - `src/index.ts` — 路由。房号正则 `/^\/api\/rooms\/([A-Z2-9]{6})/`（**排除 0/1**）。
-- `src/types.ts` — 类型与常量（默认盲注、`getRoundName`）。
+- `src/types.ts` — 类型与常量（默认盲注、`getRoundName`、`Player.isSittingOut` 断线坐出标志）。
 - `public/index.html` — **瘦客户端**，只渲染后端 `currentPlayerIndex`，**不含顺序逻辑**。
+- `public/scripts/render.js` — 渲染。含两处**与后端同源**的逻辑（改后端时务必同步）：`isRoundComplete()`、"可行动/候选获胜者"过滤（都需含 `!isSittingOut && !isAllIn`）。
+- `public/scripts/socket.js` — WebSocket 保活/重连。心跳 `PING_INTERVAL=60s`/`PONG_TIMEOUT=240s`（~5 分钟窗口，防后台误杀）；切回前台补 ping 或立即重连。
 - `test/game-room.test.ts` — vitest（Cloudflare workers pool）。
 
 ## 扑克行动顺序不变量（动手前必读）
@@ -22,6 +24,14 @@
 - **翻牌前**首动 = UTG（BB 下家）；单挑 = SB(=庄家)。
 - **翻牌后 (flop/turn/river)** 首动 = SB；单挑 = BB（庄家/SB 在位、最后动）。
 - ⚠️ **单挑翻牌后"大盲先动"是标准规则、不是 bug。** 曾被误当 bug 改成"永远小盲先动"又回退——别再犯。见 [WORKLOG.md](./WORKLOG.md) 2026-06-20。
+
+## 断线坐出(sitting-out)不变量（动手前必读）
+断线玩家**在本手牌内**：保持座位 + 盲注位次 + 底池权益，只"纯跳过"（不 fold、不出局、不付筹码、不消耗行动权）。重连后本手牌仍挂机，**等下一手发牌（`startHand`）才复活**。
+- 由 `Player.isSittingOut` 标志驱动（2026-06-27 引入）。断线 → `markDisconnected` 置 `isSittingOut=true`（**不再** `isActive=false`/`isFolded=true`）。
+- "可行动"判定 = `!isFolded && isActive && !isAllIn && !isSittingOut`（`advanceTurn`/`isRoundComplete`/`setFirstToAct` 三处）。
+- "仍在争夺底池" = `!isFolded`（断线挂机者未弃牌、仍争夺，**不计入被淘汰**）——这是防"一人断线→另一人直接独胜"的关键。
+- 位次/盲注环基于 `isActive`（开手牌时按在线快照固定），断线**不收缩环** → 位次在本手牌内稳定不变。
+- ⚠️ 这是**刻意设计**，不是 bug。早期断线即 fold、活跃环收缩，导致 SB/BB 塌缩到一人+一人独胜，已修。别再改回"断线=弃牌"。见 [WORKLOG.md](./WORKLOG.md) 2026-06-27 (晚)。
 
 ## 任务手册（用这些固定命令，利于缓存）
 - **验证顺序逻辑**：别只靠 `npm test`——本沙箱里 Cloudflare vitest pool 启动常 90s 超时。最稳：把 `setFirstToAct/advanceTurn/postBlinds/nextActiveIndex` 原样抄进一个纯 Node `.mjs` 跑 2/3/4 人模拟（见 WORKLOG 做法）。
@@ -35,6 +45,7 @@
 - `wrangler.toml` 必须保持 `new_sqlite_classes = ["GameRoom"]`（Free Tier 只支持 SQLite-backed DO；改回 `new_classes` 会坏）。
 - **绝不在卷根 `/Volumes/2chuiniu` 跑 `git init/add`**——会把整卷大文件/备份一起跟踪，曾撑爆磁盘到 100%。要版本管理就在本项目目录内单独 `git init`。
 - `wrangler deploy` 在非 TTY 后台运行时，输出会缓冲到结束才出现，别误判为卡死。
+- **前后端同源逻辑**：`render.js` 的 `isRoundComplete()`、"可行动/候选获胜者"过滤与后端 `game-room.ts` 必须保持一致（含 `!isSittingOut`）。改后端谓词时务必同步前端，否则 UI 与实际牌局状态会分叉。
 
 ## 为什么这份文件存在
 Claude Code 每次会话开始就把本文件载入上下文，所以你能跳过"读一堆文件重新搞懂架构 / 找热点 / 推断扑克规则"的过程——直接省下大量 Read·Grep·Bash 的 token。它同时改善**提示缓存命中**：作为稳定前缀被缓存、会话内（及相邻会话）复用；你探索越少、命令越固定，上下文增长越慢，被缓存的前缀越能持续命中。请**保持它稳定、精炼、最新**，别每次会话大改（大改会使缓存前缀失配）。
