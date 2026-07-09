@@ -1,11 +1,11 @@
 // 应用入口：粘合所有模块。负责状态流转、消息路由、庆祝弹窗、连接联动、SW 注册。
 // 不持有复杂逻辑，只把 socket 的消息分发给 render / feedback / ui。
-import { $, toast, showView, showModal, closeModal, closeTopModal, renderConnDot, applyDeepLink, installKeyboardAdapter } from './ui.js?v=7';
-import { connect, disconnect, onMessage, onConn, getMyPlayerId, setMyPlayerId, persistIdentity, getCurrentRoomId, getCurrentName } from './socket.js?v=7';
-import { deviceId, getSavedPlayer } from './storage.js?v=7';
-import { render, renderActionBar, clearSelectedWinners, toggleWinner, isMyTurn } from './render.js?v=7';
-import { sendAction, onFoldClick, doRaise, showRaise, adjustRaise, onRaiseInput, doAllIn, confirmTiers, nextTier, prevTier, startHand, nextRound, updateSettings } from './actions.js?v=7';
-import { notifyMyTurn } from './feedback.js?v=7';
+import { $, toast, showView, showModal, closeModal, closeTopModal, renderConnDot, applyDeepLink, installKeyboardAdapter } from './ui.js?v=8';
+import { connect, disconnect, onMessage, onConn, getMyPlayerId, setMyPlayerId, persistIdentity, getCurrentRoomId, getCurrentName } from './socket.js?v=8';
+import { deviceId, getSavedPlayer } from './storage.js?v=8';
+import { render, renderActionBar, clearSelectedWinners, toggleWinner, isMyTurn } from './render.js?v=8';
+import { sendAction, onFoldClick, doRaise, showRaise, adjustRaise, onRaiseInput, doAllIn, confirmTiers, nextTier, prevTier, startHand, nextRound, updateSettings, rebuy, removePlayer } from './actions.js?v=8';
+import { notifyMyTurn } from './feedback.js?v=8';
 
 // 应用级状态
 let state = null;
@@ -85,6 +85,18 @@ $('#action-bar').addEventListener('click', (e) => {
     case 'next-tier': nextTier(); if (state) renderActionBar(state, myPlayerId); break;
     case 'undo-tier': prevTier(); if (state) renderActionBar(state, myPlayerId); break;
     case 'confirm-tiers': confirmTiers(); break;
+  }
+});
+
+// 大厅：补码 / 移除离线玩家
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-action="rebuy"], button[data-action="remove-player"]');
+  if (!btn) return;
+  const pid = btn.dataset.player;
+  if (!pid) return;
+  if (btn.dataset.action === 'rebuy') rebuy(pid);
+  else if (btn.dataset.action === 'remove-player') {
+    if (confirm('确定移除此离线玩家？')) removePlayer(pid);
   }
 });
 

@@ -1,6 +1,6 @@
 // 渲染层：根据后端 state 渲染大厅 / 游戏界面 / 摊牌 / 庆祝。
 // 只读 state、只写 DOM，不直接发消息（操作由 app.js 通过事件委托处理）。
-import { $, esc, showView } from './ui.js?v=7';
+import { $, esc, showView } from './ui.js?v=8';
 
 /** 统一的"是否轮到我"判定（4 字段谓词），供 renderGame / renderActionBar / app.js 复用。
  *  与后端 game-room.ts advanceTurn 的跳过条件同源。 */
@@ -103,12 +103,20 @@ function renderLobby(state, myPlayerId) {
   const { me } = buildPlayerMap(state.players, myPlayerId);
   $('#btn-start').style.display = me ? '' : 'none';
 
-  $('#lobby-players').innerHTML = state.players.map((p) => `
+  $('#lobby-players').innerHTML = state.players.map((p) => {
+    const rebuyBtn = `<button class="btn btn-xs btn-secondary" data-action="rebuy" data-player="${p.id}" title="补码 +1000">+码</button>`;
+    const removeBtn = !p.isConnected
+      ? `<button class="btn btn-xs btn-danger" data-action="remove-player" data-player="${p.id}" title="移除离线玩家">移除</button>`
+      : '';
+    return `
     <div class="player-item${p.id === myPlayerId ? ' is-you' : ''}" data-initial="${esc((p.name || '?').charAt(0))}">
       <span class="player-name">${esc(p.name)}${p.id === myPlayerId ? ' <span class="text-xs text-dim">(你)</span>' : ''}${!p.isConnected ? ' <span class="player-tag tag-offline">离线</span>' : ''}</span>
-      <span class="player-chips">${p.chips}</span>
-    </div>
-  `).join('');
+      <span class="player-chips-row">
+        <span class="player-chips">${p.chips}</span>
+        ${rebuyBtn}${removeBtn}
+      </span>
+    </div>`;
+  }).join('');
 }
 
 // ---------- 游戏 ----------
@@ -244,12 +252,12 @@ export function renderActionBar(state, myPlayerId) {
 
 function renderShowdown(state, myPlayerId) {
   $('#raise-control').style.display = 'none';
-  // 候选：未弃牌、未挂机（挂机者未实际争夺，不参与选胜）
-  const activePlayers = state.players.filter((p) => !p.isFolded && !p.isSittingOut);
+  // 候选：所有未弃牌者（含挂机）。断线挂机仍占座争夺底池，物理牌桌上牌仍在，必须能选胜。
+  const activePlayers = state.players.filter((p) => !p.isFolded);
   const tierIndex = selectedTiers.length; // 0 = 第1名
   const tierLabel = tierIndex === 0 ? '第 1 名（可并列选平手）' : `第 ${tierIndex + 1} 名`;
 
-  $('#action-hint').textContent = `摊牌 · 选择${tierLabel}`;
+  $('#action-hint').textContent = `摊牌 · 选择${tierLabel}（有边池时请用「下一档」排完）`;
 
   const confirmDisabled = currentTier.size === 0 && selectedTiers.length === 0 ? ' style="opacity:.4;pointer-events:none"' : '';
   const nextDisabled = currentTier.size === 0 ? ' style="opacity:.4;pointer-events:none"' : '';
@@ -259,7 +267,8 @@ function renderShowdown(state, myPlayerId) {
 
   $('#action-buttons').innerHTML = activePlayers.map((p) => {
     const sel = currentTier.has(p.id);
-    return `<button class="btn btn-xs ${sel ? 'btn-primary' : 'btn-secondary'}" data-winner="${p.id}">${esc(p.name)}</button>`;
+    const tag = p.isSittingOut ? '·暂离' : '';
+    return `<button class="btn btn-xs ${sel ? 'btn-primary' : 'btn-secondary'}" data-winner="${p.id}">${esc(p.name)}${tag}</button>`;
   }).join('')
     + `<button class="btn btn-xs btn-secondary" data-action="next-tier"${nextDisabled}>下一档</button>`
     + undoBtn

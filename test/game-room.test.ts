@@ -432,7 +432,7 @@ describe('GameRoom 极限与异常场景', () => {
   });
 });
 
-describe('GameRoom 每日清理（ET 7:00 销毁房间）', () => {
+describe('GameRoom 每日清理（北京 04:00 / TTL 销毁房间）', () => {
   it('alarm 触发后房间被彻底销毁、目录移除', async () => {
     const roomId = 'CLN001';
     const registry = env.ROOM_REGISTRY.getByName(roomId);

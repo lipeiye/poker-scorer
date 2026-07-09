@@ -4,7 +4,7 @@
 const CACHE = 'pk-shell-v7';
 const SHELL = [
   './',
-  './styles.css?v=7',
+  './styles.css?v=8',
   './manifest.webmanifest',
   './favicon.png',
   './icon-192.png',

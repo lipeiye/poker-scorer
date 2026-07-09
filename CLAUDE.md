@@ -36,6 +36,7 @@
 - "仍在争夺底池" = `!isFolded`（断线挂机者未弃牌、仍争夺，**不计入被淘汰**）——这是防"一人断线→另一人直接独胜"的关键。
 - 位次/盲注环基于 `isActive`（开手牌时按在线快照固定），断线**不收缩环** → 位次在本手牌内稳定不变。
 - ⚠️ 这是**刻意设计**，不是 bug。早期断线即 fold、活跃环收缩，导致 SB/BB 塌缩到一人+一人独胜，已修。别再改回"断线=弃牌"。见 [WORKLOG.md](./WORKLOG.md) 2026-06-27 (晚)。
+- 摊牌选胜候选 = `!isFolded`（**含挂机**）。前端不得再过滤 `isSittingOut`。
 
 ## 任务手册（用这些固定命令，利于缓存）
 - **验证顺序逻辑**：别只靠 `npm test`——本沙箱里 Cloudflare vitest pool 启动常 90s 超时。最稳：把 `setFirstToAct/advanceTurn/postBlinds/nextActiveIndex` 原样抄进一个纯 Node `.mjs` 跑 2/3/4 人模拟（见 WORKLOG 做法）。
@@ -43,6 +44,7 @@
 - **部署（任何后端改动都必须；无热更新）**：`npx wrangler deploy` → 记 `Current Version ID`。
 - 线上日志：`npx wrangler tail`
 - 线上自测：`POST /api/rooms`（房号由 `generateRoomCode` 生成，必合法）→ 查 `/api/rooms/<id>/state`。自造非法房号（含 0/1）会落到 ASSETS 报 1101，属正常、非故障。
+- **每日清理**：北京时间 04:00；手牌进行中会推迟，不中途毁房。另有 7 天 TTL。
 
 ## 易踩的坑
 - 后端改动**只能靠重新部署生效**；DO 房间状态跨部署保留，进行中的一手牌不回填，**下一手 / 下一轮**才走新代码。

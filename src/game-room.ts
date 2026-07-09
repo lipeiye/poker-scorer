@@ -78,30 +78,29 @@ export class GameRoom extends DurableObject<Env> {
   }
 
   /**
-   * 计算从 now 到「下一个美东纽约时间 7:00」的毫秒数。
-   * 用 America/New_York 时区，自动遵循 DST（夏令时），DST 切换日最多有 ~1h 误差，
-   * 对于"每天清理一次"的用途完全可接受。
+   * 计算从 now 到「下一个北京时间 04:00」的毫秒数。
+   * 用 Asia/Shanghai（无 DST）。选凌晨 4 点避开国内熟人局黄金时段（晚间）。
    */
   private nextCleanupMs(now = Date.now()): number {
-    const NY_TZ = 'America/New_York';
+    const TZ = 'Asia/Shanghai';
     const wallParts = new Intl.DateTimeFormat('en-US', {
-      timeZone: NY_TZ,
+      timeZone: TZ,
       hourCycle: 'h23',
       year: 'numeric', month: '2-digit', day: '2-digit',
       hour: '2-digit', minute: '2-digit', second: '2-digit',
     }).formatToParts(new Date(now));
     const get = (t: string) => Number(wallParts.find(p => p.type === t)?.value ?? 0);
     const wallHour = get('hour');
-    // 当前 ET 墙钟到今天 7:00 还剩多少毫秒（若已过 7 点则为负）
+    // 当前北京墙钟到今天 4:00 还剩多少毫秒（若已过 4 点则为负）
     const elapsedTodayMs =
       ((wallHour * 60 + get('minute')) * 60 + get('second')) * 1000;
-    const sevenAmMs = 7 * 60 * 60 * 1000;
-    let delta = sevenAmMs - elapsedTodayMs;
+    const fourAmMs = 4 * 60 * 60 * 1000;
+    let delta = fourAmMs - elapsedTodayMs;
     if (delta <= 0) delta += 24 * 60 * 60 * 1000;
     return delta;
   }
 
-  /** 取「下一个 ET 7:00」与「7 天 TTL 过期」中较早者，作为 alarm 触发时间。 */
+  /** 取「下一个北京 04:00」与「7 天 TTL 过期」中较早者，作为 alarm 触发时间。 */
   private nextCleanupOrExpiry(now = Date.now()): number {
     const cleanup = now + this.nextCleanupMs(now);
     const expiry = this.game ? this.game.expiresAt : now + ROOM_TTL_MS;
@@ -213,6 +212,12 @@ export class GameRoom extends DurableObject<Env> {
           break;
         case 'updateSettings':
           await this.handleSettings(ws, msg.settings || {});
+          break;
+        case 'rebuy':
+          await this.handleRebuy(ws, msg.amount, msg.targetPlayerId || msg.playerId);
+          break;
+        case 'removePlayer':
+          await this.handleRemovePlayer(ws, msg.targetPlayerId || msg.playerId);
           break;
         case 'ping':
           ws.send(JSON.stringify({ type: 'pong' }));
@@ -365,7 +370,14 @@ export class GameRoom extends DurableObject<Env> {
   private awardToSoloSurvivor(winnerId: string, reason: string): void {
     const winner = this.game.players.find(p => p.id === winnerId);
     this.game.round = 'showdown';
-    this.awardPotsByTiers([[winnerId]]);
+    const result = this.awardPotsByTiers([[winnerId]]);
+    if (!result.ok) {
+      // 单人独胜理论上必成功；若失败仍保持 showdown 并提示
+      this.game.lastAction = result.message;
+      this.broadcast();
+      return;
+    }
+    this.game.round = 'waiting';
     this.game.lastAction = `${winner?.name || '未知'} 获胜（${reason}）`;
     this.broadcast();
   }
@@ -377,8 +389,18 @@ export class GameRoom extends DurableObject<Env> {
       return;
     }
 
-    // alarm 无论是「每日 ET 7:00 清理」还是「7 天 TTL 过期」，都执行同一套销毁：
-    // 关闭所有连接、从房间目录移除、清空存储。次日玩家需重新创建房间。
+    const now = Date.now();
+    const ttlExpired = now >= this.game.expiresAt;
+
+    // 手牌进行中：绝不销毁，延后 15 分钟再检查（或等到 TTL）。
+    // 避免北京时间晚间牌局被每日清理误杀。
+    if (!ttlExpired && this.game.round !== 'waiting') {
+      const retryAt = Math.min(now + 15 * 60 * 1000, this.game.expiresAt);
+      await this.ctx.storage.setAlarm(Math.max(now + 1_000, retryAt));
+      return;
+    }
+
+    // waiting 下的每日清理，或 7 天 TTL 到期：销毁房间。
     const roomId = this.game.roomId;
     this.expired = true;
     for (const ws of this.ctx.getWebSockets()) {
@@ -451,14 +473,20 @@ export class GameRoom extends DurableObject<Env> {
 
         if (totalNeeded >= player.chips) {
           const allIn = player.chips;
+          const prevBet = this.game.currentBet;
           player.chips = 0;
           player.currentBet += allIn;
           player.totalBet += allIn;
           this.game.pot += allIn;
           player.isAllIn = true;
           if (player.currentBet > this.game.currentBet) {
+            const raiseSize = player.currentBet - prevBet;
             this.game.currentBet = player.currentBet;
-            this.resetActedFlags(playerIndex);
+            // 不足额 all-in（加注幅度 < 大盲）不完整重开行动：已行动者只需补跟，不可再加注重开。
+            // 通过不 reset 标志实现；isRoundComplete 仍要求 currentBet 对齐，故未跟满者仍会被轮到。
+            if (raiseSize >= this.game.bigBlind) {
+              this.resetActedFlags(playerIndex);
+            }
           }
           this.game.lastAction = `${player.name} All-in ${allIn}`;
         } else {
@@ -492,8 +520,8 @@ export class GameRoom extends DurableObject<Env> {
 
     this.advanceTurn();
 
-    // 全体 All-in 检测：无人可行动时自动推进到摊牌，避免无意义的手动点击。
-    if (this.isRoundComplete() && this.allContestingAreAllIn()) {
+    // 无人能再形成有效对峙（全员 all-in / 仅一人可行动）→ 直接摊牌，无需逐街 check。
+    if (this.isRoundComplete() && this.shouldRunOutBoard()) {
       await this.autoAdvanceToShowdown();
       return;
     }
@@ -536,24 +564,31 @@ export class GameRoom extends DurableObject<Env> {
     );
   }
 
-  /** 所有未弃牌玩家是否都已 All-in（无人可在后续街道行动） */
-  private allContestingAreAllIn(): boolean {
+  /**
+   * 后续街道无法再形成有效对峙时直接跑牌：
+   * - 可行动人数为 0（全员 all-in / 挂机）
+   * - 可行动人数为 1（其余 all-in 或挂机，下注无人回应）
+   * 线下会直接发完公共牌；计分器跳过无意义的逐街 check。
+   */
+  private shouldRunOutBoard(): boolean {
     const contesting = this.game.players.filter(p => !p.isFolded);
-    return contesting.length > 0 && contesting.every(p => p.isAllIn);
+    if (contesting.length < 2) return false;
+    const actionable = contesting.filter(
+      p => p.isActive && !p.isAllIn && !p.isSittingOut
+    );
+    return actionable.length <= 1;
   }
 
-  /** 全体 All-in 时快速推进到摊牌 */
+  /** 跳过中间街道，直接进入摊牌 */
   private async autoAdvanceToShowdown(): Promise<void> {
-    // 跳过中间街道，直接到摊牌
     this.game.communityCards = 5;
-    // 重置 round betting 状态
     this.game.players.forEach(p => {
       p.currentBet = 0;
       p.hasActedThisRound = false;
     });
     this.game.currentBet = 0;
     this.game.round = 'showdown';
-    this.game.lastAction = '全体 All-in，直接进入摊牌 — 请选择获胜者';
+    this.game.lastAction = '无人可再加注，直接进入摊牌 — 请选择获胜者';
     this.broadcast();
   }
 
@@ -564,6 +599,12 @@ export class GameRoom extends DurableObject<Env> {
     }
     if (!this.isRoundComplete()) {
       this.sendError(ws, '本轮下注尚未完成');
+      return;
+    }
+
+    // 进入下一街前若已无人能再对峙，直接摊牌
+    if (this.shouldRunOutBoard()) {
+      await this.autoAdvanceToShowdown();
       return;
     }
 
@@ -587,6 +628,13 @@ export class GameRoom extends DurableObject<Env> {
     }
 
     this.setFirstToAct();
+
+    // 新街道开始时再次检测（例如仅一人有筹码）
+    if (this.shouldRunOutBoard()) {
+      await this.autoAdvanceToShowdown();
+      return;
+    }
+
     this.game.lastAction = `进入【${getRoundName(this.game.round)}】轮`;
     this.broadcast();
   }
@@ -636,6 +684,12 @@ export class GameRoom extends DurableObject<Env> {
     this.postBlinds();
     this.setFirstToAct();
     this.game.lastAction = `第 ${this.game.handNumber} 手牌开始`;
+
+    // 盲注后若已无人可再行动（例如全员短码 all-in），直接摊牌
+    if (this.isRoundComplete() && this.shouldRunOutBoard()) {
+      await this.autoAdvanceToShowdown();
+      return;
+    }
     this.broadcast();
   }
 
@@ -669,8 +723,9 @@ export class GameRoom extends DurableObject<Env> {
     bb.currentBet = bbAmt;
     bb.totalBet = bbAmt;
     this.game.pot += bbAmt;
-    // currentBet 锁定为 bigBlind（即使 BB 实际付不起全额），保证 toCall 计算基准正确。
-    this.game.currentBet = this.game.bigBlind;
+    // currentBet = 实际最高已下注（BB 短码时为 bbAmt，而非名义 bigBlind）。
+    // 跟注只需对齐最高有效下注；最小加注幅度仍用 bigBlind 约束。
+    this.game.currentBet = Math.max(sbAmt, bbAmt);
     if (bb.chips <= 0) bb.isAllIn = true;
 
     this.game.lastAction = `盲注: SB ${sbAmt} | BB ${bbAmt}`;
@@ -776,37 +831,43 @@ export class GameRoom extends DurableObject<Env> {
       }
     }
 
-    this.awardPotsByTiers(normalized);
+    const result = this.awardPotsByTiers(normalized);
+    if (!result.ok) {
+      this.sendToAll(result.message);
+      return;
+    }
     this.game.round = 'waiting';
-    this.game.lastAction = '手牌结束 — 点击【开始新一手牌】继续';
+    // 保留边池分配明细，附带下一手提示
+    this.game.lastAction = `${this.game.lastAction} — 点击【开始新一手牌】继续`;
     this.broadcast();
   }
 
   /**
    * 按排名分档结算主池/边池。
    *
-   * tiers[i] = 第 (i+1) 名（可并列，表示平手）。牌力从强到弱排列。
-   * 算法：按每个玩家的 totalBet 把底池拆成若干层（level），每层只由投入达到该
-   * level 的未弃牌玩家争夺；在该层的合格玩家中，找 tiers 里第一个（名次最高）
-   * 有人落在该层的档位，该档位的合格成员平分这一层。
+   * tiers[i] = 第 (i+1) 名（可并列）。牌力从强到弱。
+   * 算法：按 totalBet 分层；每层由投入达标的未弃牌玩家争夺。
    *
-   * 例：A 全押 100、B 全押 500、C 跟 500。levels=[100,500]。
-   *  - level 100 层 = 100×3 = 300，合格者 {A,B,C}。若 tiers=[[A],[B]]，
-   *    第 1 名 A 在合格者内 → A 独得 300。
-   *  - level 500 层 = 400×2 = 800，合格者 {B,C}。第 1 名 A 不在；第 2 名 B 在 → B 独得 800。
+   * 筹码守恒保证：
+   * 1. 某层无未弃牌合格者 → 退还该层贡献者（uncalled / 弃牌后超额）。
+   * 2. 某层仅 1 名合格者且 tiers 未覆盖 → 自动归该人（未跟注退还或独占边池）。
+   * 3. 某层 ≥2 名合格者且 tiers 未覆盖任何人 → 拒绝结算，要求继续选名次。
    */
-  private awardPotsByTiers(tiers: string[][]): void {
+  private awardPotsByTiers(tiers: string[][]): { ok: true } | { ok: false; message: string } {
     const players = this.game.players;
     const contributors = players.filter(p => p.totalBet > 0);
-    if (contributors.length === 0 || this.game.pot <= 0) return;
+    if (contributors.length === 0 || this.game.pot <= 0) return { ok: true };
 
     const levelSet = new Set<number>();
     for (const p of contributors) levelSet.add(p.totalBet);
     const levels = Array.from(levelSet).sort((a, b) => a - b);
 
-    const pots: { amount: number; winnerIds: string[] }[] = [];
-    const winnerNames: string[] = [];
-    const allWinnerIds = new Set<string>();
+    type LayerPlan = {
+      potTotal: number;
+      winningIds: string[];
+      refund?: boolean;
+    };
+    const plans: LayerPlan[] = [];
     let prevLevel = 0;
 
     for (const level of levels) {
@@ -814,16 +875,23 @@ export class GameRoom extends DurableObject<Env> {
       prevLevel = level;
       if (layerAmount <= 0) continue;
 
-      // 投入达到该 level 的玩家都为这一层贡献了 layerAmount。
       const contributorsAtLayer = contributors.filter(p => p.totalBet >= level);
       const potTotal = layerAmount * contributorsAtLayer.length;
       if (potTotal <= 0) continue;
 
-      // 合格争夺者：未弃牌（已弃牌者的钱留在池里但不能赢）。
-      const eligibleIds = new Set(contributorsAtLayer.filter(p => !p.isFolded).map(p => p.id));
-      if (eligibleIds.size === 0) continue; // 该层无人有资格（理论上不该发生），跳过
+      const eligible = contributorsAtLayer.filter(p => !p.isFolded);
+      const eligibleIds = new Set(eligible.map(p => p.id));
 
-      // 在 tiers 中找第一个（名次最高）有成员落在 eligible 的档位。
+      // 无人有资格：退还该层全部贡献者（典型：超额加注后全弃，或仅弃牌者留在更高层）
+      if (eligibleIds.size === 0) {
+        plans.push({
+          potTotal,
+          winningIds: contributorsAtLayer.map(p => p.id),
+          refund: true,
+        });
+        continue;
+      }
+
       let winningIds: string[] = [];
       for (const tier of tiers) {
         const matched = tier.filter(id => eligibleIds.has(id));
@@ -832,20 +900,41 @@ export class GameRoom extends DurableObject<Env> {
           break;
         }
       }
-      if (winningIds.length === 0) continue; // 没有排名覆盖该层，理论上跳过
 
-      // 平分（余数给第一个）。
-      const share = Math.floor(potTotal / winningIds.length);
-      const remainder = potTotal - share * winningIds.length;
-      for (let i = 0; i < winningIds.length; i++) {
-        const winner = players.find(p => p.id === winningIds[i]);
+      // tiers 未覆盖该层：单人合格 → 自动归其（未跟注退还）；多人 → 要求补排名
+      if (winningIds.length === 0) {
+        if (eligibleIds.size === 1) {
+          winningIds = [eligible[0].id];
+        } else {
+          const names = eligible.map(p => p.name).join('、');
+          return {
+            ok: false,
+            message: `边池尚未排完名次，请继续选择（涉及：${names}）`,
+          };
+        }
+      }
+
+      plans.push({ potTotal, winningIds });
+    }
+
+    // 两阶段：先规划成功，再动筹码，避免半结算。
+    const pots: { amount: number; winnerIds: string[] }[] = [];
+    const winnerNames: string[] = [];
+    const allWinnerIds = new Set<string>();
+    const potBefore = this.game.pot;
+
+    for (const plan of plans) {
+      const share = Math.floor(plan.potTotal / plan.winningIds.length);
+      const remainder = plan.potTotal - share * plan.winningIds.length;
+      for (let i = 0; i < plan.winningIds.length; i++) {
+        const winner = players.find(p => p.id === plan.winningIds[i]);
         if (winner) {
           winner.chips += share + (i === 0 ? remainder : 0);
           allWinnerIds.add(winner.id);
           if (!winnerNames.includes(winner.name)) winnerNames.push(winner.name);
         }
       }
-      pots.push({ amount: potTotal, winnerIds: winningIds.slice() });
+      pots.push({ amount: plan.potTotal, winnerIds: plan.winningIds.slice() });
     }
 
     this.game.lastWinnerIds = Array.from(allWinnerIds);
@@ -858,8 +947,81 @@ export class GameRoom extends DurableObject<Env> {
     }).join(' | ');
     this.game.lastAction = pots.length > 1
       ? `${breakdown}（已按主池/边池结算）`
-      : `${winnerNames.join('、')} 赢得 ${this.game.pot} 筹码`;
+      : `${winnerNames.join('、')} 赢得 ${potBefore} 筹码`;
     this.game.pot = 0;
+    return { ok: true };
+  }
+
+  /** 等待阶段补码（默认 +DEFAULT_CHIPS） */
+  private async handleRebuy(
+    ws: WebSocket,
+    amount?: number,
+    targetPlayerId?: string,
+  ): Promise<void> {
+    if (this.game.round !== 'waiting') {
+      this.sendError(ws, '仅在等待开始时可以补码');
+      return;
+    }
+    const actorId = this.playerIdFor(ws);
+    if (!actorId) {
+      this.sendError(ws, '未加入游戏');
+      return;
+    }
+    const targetId = targetPlayerId || actorId;
+    const player = this.game.players.find(p => p.id === targetId);
+    if (!player) {
+      this.sendError(ws, '玩家不存在');
+      return;
+    }
+    const add = amount != null && Number.isInteger(amount) && amount > 0
+      ? amount
+      : DEFAULT_CHIPS;
+    if (add > 100_000) {
+      this.sendError(ws, '单次补码不能超过 100000');
+      return;
+    }
+    player.chips += add;
+    this.game.lastAction = `${player.name} 补码 +${add}（现有 ${player.chips}）`;
+    this.broadcast();
+  }
+
+  /** 等待阶段移除离线玩家，释放座位 */
+  private async handleRemovePlayer(ws: WebSocket, targetPlayerId?: string): Promise<void> {
+    if (this.game.round !== 'waiting') {
+      this.sendError(ws, '仅在等待开始时可以移除玩家');
+      return;
+    }
+    if (!targetPlayerId) {
+      this.sendError(ws, '请指定要移除的玩家');
+      return;
+    }
+    const actorId = this.playerIdFor(ws);
+    if (!actorId) {
+      this.sendError(ws, '未加入游戏');
+      return;
+    }
+    const idx = this.game.players.findIndex(p => p.id === targetPlayerId);
+    if (idx < 0) {
+      this.sendError(ws, '玩家不存在');
+      return;
+    }
+    const player = this.game.players[idx];
+    if (player.isConnected) {
+      this.sendError(ws, '只能移除离线玩家');
+      return;
+    }
+    const name = player.name;
+    this.game.players.splice(idx, 1);
+    delete this.game.playerDevices[targetPlayerId];
+    if (this.game.players.length === 0) {
+      this.game.dealerIndex = 0;
+    } else if (idx < this.game.dealerIndex) {
+      this.game.dealerIndex--;
+    } else if (this.game.dealerIndex >= this.game.players.length) {
+      this.game.dealerIndex = 0;
+    }
+    this.game.lastAction = `${name} 已移出房间`;
+    this.broadcast();
   }
 
   private async handleSettings(_ws: WebSocket, settings: Partial<Pick<GameState, 'smallBlind' | 'bigBlind'>>): Promise<void> {

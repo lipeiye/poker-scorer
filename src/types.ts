@@ -68,7 +68,7 @@ export interface SidePot {
 
 /** 客户端 → 服务端消息 */
 export interface ClientMessage {
-  type: 'join' | 'leave' | 'action' | 'startHand' | 'nextRound' | 'endHand' | 'updateSettings' | 'ping';
+  type: 'join' | 'leave' | 'action' | 'startHand' | 'nextRound' | 'endHand' | 'updateSettings' | 'rebuy' | 'removePlayer' | 'ping';
   name?: string;
   playerId?: string;
   deviceId?: string;
@@ -81,6 +81,8 @@ export interface ClientMessage {
    *  未在任一档位的玩家视为更低名次，不参与争夺边池。 */
   tiers?: string[][];
   settings?: Partial<Pick<GameState, 'smallBlind' | 'bigBlind'>>;
+  /** rebuy 目标玩家；省略则为操作者本人 */
+  targetPlayerId?: string;
 }
 
 /** 服务端 → 客户端消息 */

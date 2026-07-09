@@ -1,9 +1,9 @@
 // 玩家操作层：弃牌/过牌/跟注/加注/全押/下一轮/摊牌排名分档/盲注设置。
 // 集中处理：触觉反馈(M7)、弃牌二次确认(M8)、加注金额步进、加注总额实时预览。
 // 不直接持状态，所有操作通过 socket.send 发出。
-import { $, toast } from './ui.js?v=7';
-import { send } from './socket.js?v=7';
-import { clearSelectedWinners, getTiers, advanceTier, undoTier } from './render.js?v=7';
+import { $, toast } from './ui.js?v=8';
+import { send } from './socket.js?v=8';
+import { clearSelectedWinners, getTiers, advanceTier, undoTier } from './render.js?v=8';
 
 // ---------- M7: 触觉反馈 ----------
 export function vibrate(pattern) {
@@ -155,4 +155,19 @@ export function updateSettings() {
   const bb = parseInt($('#set-bb').value) || 20;
   if (bb <= sb) return; // 后端会校验，前端先挡一层
   send({ type: 'updateSettings', settings: { smallBlind: sb, bigBlind: bb } });
+}
+
+// ---------- 补码 / 移除离线玩家（仅 waiting） ----------
+/** 默认补 1000（与后端 DEFAULT_CHIPS 一致）；可传入 amount */
+export function rebuy(targetPlayerId, amount) {
+  const msg = { type: 'rebuy', targetPlayerId };
+  if (amount != null) msg.amount = amount;
+  send(msg);
+  vibrate(10);
+}
+
+export function removePlayer(targetPlayerId) {
+  if (!targetPlayerId) return;
+  send({ type: 'removePlayer', targetPlayerId });
+  vibrate(15);
 }
