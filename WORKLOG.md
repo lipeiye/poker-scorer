@@ -36,3 +36,9 @@
 
 - 纯 Node 镜像 `awardPotsByTiers` 新算法：边池 / 未跟注退还 / 弃牌超额退还 / 未排满拒绝 / 单人边池自动 — 全部通过
 - `npx tsc --noEmit` 通过
+
+### 部署
+
+- GitHub: `main` @ `8c4ee6e`
+- Workers Version ID: `d120ac1d-d582-4344-a1d0-bdf8825e2681`
+- URL: https://poker-scorer.1956133426lpy.workers.dev
