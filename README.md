@@ -145,6 +145,6 @@ npm run tail         # 线上实时日志
 |------|------|
 | [README.md](./README.md) | 产品说明、上手、结构、部署入口 |
 | [docs/TECHNICAL.md](./docs/TECHNICAL.md) | 架构、协议、关键逻辑、不变量、前后端同源清单、运维 |
-| [docs/RISKS_AND_IMPROVEMENTS.md](./docs/RISKS_AND_IMPROVEMENTS.md) | 风险评估、可瘦身点、改进路线与技术取舍 |
+| [docs/RISKS_AND_IMPROVEMENTS.md](./docs/RISKS_AND_IMPROVEMENTS.md) | 风险速查 + **AI 可单卡执行的改进任务**（T01–T25，按 200k 窗口裁切） |
 
 历史 WORKLOG / 审计手册 / Agent 导航中的稳定结论已并入技术文档与风险评估文档。
