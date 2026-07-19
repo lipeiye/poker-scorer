@@ -11,6 +11,7 @@ import { notifyMyTurn } from './feedback.js?v=9';
 let state = null;
 let myPlayerId = getMyPlayerId() || deviceId();
 let hostSharePending = false;
+let lastSettlementKey = '';
 
 // ---------- 初始化 ----------
 applyDeepLink();           // M6: 深链预填
@@ -124,6 +125,7 @@ function onState(s) {
   render(s, myPlayerId);
   renderActionBar(s, myPlayerId);
   maybeShowWinnerCelebration(s);
+  maybeShowSettlementToast(s);
   notifyMyTurnIfNeeded(s, prev);
   if (hostSharePending) {
     hostSharePending = false;
@@ -151,7 +153,40 @@ function maybeShowWinnerCelebration(s) {
   const key = s.roomId + ':' + s.handNumber + ':' + myPlayerId;
   if (sessionStorage.getItem('pk_celebrated_win') === key) return;
   sessionStorage.setItem('pk_celebrated_win', key);
+
+  // 计算本玩家赢得的筹码总额
+  let totalWon = 0;
+  if (s.sidePots) {
+    for (const pot of s.sidePots) {
+      if (pot.winnerIds && pot.winnerIds.includes(myPlayerId)) {
+        totalWon += Math.floor(pot.amount / pot.winnerIds.length);
+      }
+    }
+  }
+
+  const amountEl = $('#winner-amount');
+  if (amountEl) {
+    amountEl.textContent = totalWon > 0 ? `+${totalWon} 筹码` : '';
+  }
+
   setTimeout(() => showModal('winner-modal'), 180);
+}
+
+/** 结算后展示主池/边池分配明细 Toast，所有人可见。 */
+function maybeShowSettlementToast(s) {
+  if (!s.sidePots || s.sidePots.length === 0) return;
+  if (s.round !== 'waiting') return;
+  const key = s.roomId + ':' + s.handNumber;
+  if (lastSettlementKey === key) return;
+  lastSettlementKey = key;
+  const parts = s.sidePots.map(p => {
+    const names = (p.winnerIds || []).map(id => {
+      const player = s.players.find(pp => pp.id === id);
+      return player ? player.name : '?';
+    }).join('、');
+    return `${names} +${p.amount}`;
+  });
+  toast('结算：' + parts.join(' | '), 4000);
 }
 
 // ---------- 首页入口 ----------

@@ -68,6 +68,7 @@
 | R8 | P2 | 无 CI；关键规则缺钉死用例 | T12–T15 T23 |
 | R9 | P3 | `lastActor` / 未用 hono 等噪音 | T01 T02 |
 | R10 | P2 | 已修逻辑的回退风险 | T12–T15 + 全局禁改 |
+| R11 | P2 | All-in 跟注场景输家可能误弹庆祝窗（`lastWinnerIds` 含退款人） | T26 |
 
 详细现象与历史背景见文末 [附录 A](#附录-a风险展开只读不执行)。
 
@@ -101,6 +102,7 @@ T22 入桌口令
 T23 CI workflow
 T24 deploy checklist 脚本提示
 T25 两人桌简化摊牌 UI
+T26 修复 all-in 输家误弹庆祝窗
 ```
 
 **推荐默认顺序（阶段 1）**  
@@ -569,6 +571,24 @@ T25 两人桌简化摊牌 UI
 
 ---
 
+### T26 — 修复 all-in 输家误弹庆祝窗
+
+| | |
+|--|--|
+| **Goal** | All-in 跟注场景下，未跟注退还（uncalled bet）的输家不再出现在 `lastWinnerIds` 中，不弹庆祝窗 |
+| **Why** | 目前 `awardPotsByTiers` 将所有收码者（含退款层）加入 `allWinnerIds`，导致 all-in 输家也看到「恭喜你拿下这一手」（R11） |
+| **Depends on** | — |
+| **必读** | `src/game-room.ts` `awardPotsByTiers`（约 865–962 行）；`src/types.ts` `SidePot`；TECHNICAL §7 |
+| **可写** | `src/game-room.ts`；`src/types.ts`（可选加 `refund?: boolean`）；`test/game-room.test.ts`（补 1 it） |
+| **In scope** | 退款层 / 单人自动归属层不计入 `lastWinnerIds`；`sidePots` 保留完整信息供前端展示 |
+| **Out of scope** | 改分池算法；改前端庆祝逻辑；host |
+| **实现要点** | 1) `SidePot` 可选加 `refund?: boolean` 2) `awardPotsByTiers` 中：`eligibleIds.size === 0` 的退还层标记 `refund: true`；单人自动归属层（uncalled bet return）也标 `refund: true` 3) 构建 `lastWinnerIds` 时跳过 `refund` 层 4) 现有 test 必须仍绿；补一条 all-in 退码不弹窗的断言 |
+| **Done** | [ ] 退款层不在 lastWinnerIds [ ] 单人退码不在 lastWinnerIds [ ] sidePots 仍有完整退款记录 [ ] 现有 test 通过 + 新 it 绿 |
+| **验证** | `npx tsc --noEmit`；`npm test`（或相关 describe） |
+| **窗口** | S–M；核心是精准标记 refund，勿改分钱公式 |
+
+---
+
 ## 5. 明确不做（勿开任务卡）
 
 | 事项 | 原因 |
@@ -642,3 +662,4 @@ T12–T15、T23。
 | 2026-07-18 | 初版风险与改进长文 |
 | 2026-07-18 | 重构为 AI 200k 窗口可精确执行的任务卡（T01–T25）+ 强制协议 |
 | 2026-07-19 | **T01 完成**：移除未使用的 hono 依赖，`npm uninstall hono`，tsc 通过 |
+| 2026-07-19 | **结算筹码显示修复**：添加结算 toast 展示分配明细 + 庆祝弹窗显示赢码数；SW cache bump v11；新增 R11 + T26（all-in 输家误弹窗） |
