@@ -20,7 +20,7 @@
 <link rel="apple-touch-icon" href="./apple-touch-icon.png">
 <link rel="preload" href="./assets/hero-d943dda7.jpg" as="image" type="image/jpeg" fetchpriority="high">
 
-<link rel="stylesheet" href="./styles.css?v=10">
+<link rel="stylesheet" href="./styles.css?v=12">
 </head>
 <body>
 
@@ -67,6 +67,10 @@
     <div class="leaderboard" id="lobby-leaderboard"></div>
     <div class="section-label">牌桌上的朋友</div>
     <div class="player-list" id="lobby-players"></div>
+    <div class="room-notices" aria-live="polite">
+      <p>本桌任何人可开始游戏、改盲注、结算与补码，操作前请桌内口头确认。</p>
+      <p id="lobby-expiry"></p>
+    </div>
     <div class="section-label">盲注设置</div>
     <div class="settings-card">
       <div class="settings-row">
@@ -169,6 +173,6 @@
 
 <div class="toast" id="toast"></div>
 
-<script type="module" src="./scripts/app.js?v=10"></script>
+<script type="module" src="./scripts/app.js?v=12"></script>
 </body>
 </html>

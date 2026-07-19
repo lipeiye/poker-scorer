@@ -1,6 +1,6 @@
 // 渲染层：根据后端 state 渲染大厅 / 游戏界面 / 摊牌 / 庆祝。
 // 只读 state、只写 DOM，不直接发消息（操作由 app.js 通过事件委托处理）。
-import { $, esc, showView } from './ui.js?v=9';
+import { $, esc, showView } from './ui.js?v=12';
 
 /** 把断线时间戳格式化成「已离线 N秒/N分钟/N小时」。无时间戳返回 '离线'。 */
 function formatOfflineDuration(disconnectedAt) {
@@ -29,21 +29,42 @@ export function isMyTurn(state, myPlayerId) {
 // currentTier:   正在选择的当前档位（Set），还没"下一档"提交。
 let selectedTiers = [];
 let currentTier = new Set();
+let settlementPreview = null;
 
 export function clearSelectedWinners() {
   selectedTiers = [];
   currentTier.clear();
+  settlementPreview = null;
 }
 
 /** 切换当前档位中某玩家的选中态 */
 export function toggleWinner(id) {
+  settlementPreview = null;
   if (currentTier.has(id)) currentTier.delete(id);
   else currentTier.add(id);
+}
+
+/** 两人摊牌简化：只允许选一位唯一胜者，不展示下一档。 */
+export function selectSoleWinner(id) {
+  settlementPreview = null;
+  selectedTiers = [];
+  currentTier = currentTier.has(id) && currentTier.size === 1
+    ? new Set()
+    : new Set([id]);
+}
+
+export function setSettlementPreview(preview) {
+  settlementPreview = preview;
+}
+
+export function clearSettlementPreview() {
+  settlementPreview = null;
 }
 
 /** 当前档位提交，进入下一档 */
 export function advanceTier() {
   if (currentTier.size === 0) return false;
+  settlementPreview = null;
   selectedTiers.push(Array.from(currentTier));
   currentTier.clear();
   return true;
@@ -51,6 +72,7 @@ export function advanceTier() {
 
 /** 撤销最近一档（回退到上一档继续编辑） */
 export function undoTier() {
+  settlementPreview = null;
   const last = selectedTiers.pop();
   if (last) currentTier = new Set(last);
 }
@@ -109,6 +131,10 @@ function renderLobby(state, myPlayerId) {
   $('#lobby-count').textContent = connected + ' 在线';
   $('#set-sb').value = state.smallBlind;
   $('#set-bb').value = state.bigBlind;
+  const expiry = state.expiresAt
+    ? new Date(state.expiresAt).toLocaleString()
+    : '未知';
+  $('#lobby-expiry').textContent = `房间将在 ${expiry} 后过期 · 服务端 ${state.serverVersion || '旧版本'}`;
   renderLeaderboard('lobby-leaderboard', state, myPlayerId);
 
   const { me } = buildPlayerMap(state.players, myPlayerId);
@@ -219,7 +245,10 @@ export function renderActionBar(state, myPlayerId) {
     return;
   }
 
-  if (isRoundComplete(state)) {
+  // 新后端以 roundComplete 为单一真源；fallback 仅兼容部署切换期的旧实例。
+  const roundDone = state.roundComplete === true
+    || (state.roundComplete === undefined && legacyIsRoundComplete(state));
+  if (roundDone) {
     actionBar.classList.add('visible');
     $('#action-hint').textContent = '';
     $('#raise-control').style.display = 'none';
@@ -263,16 +292,34 @@ export function renderActionBar(state, myPlayerId) {
 
 function renderShowdown(state, myPlayerId) {
   $('#raise-control').style.display = 'none';
+  if (settlementPreview) {
+    $('#action-hint').textContent = `结算预览 · 合计 ${settlementPreview.total} 筹码，请核对后确认`;
+    const rows = settlementPreview.payouts.map((payout) => `
+      <div class="settlement-row">
+        <span>${esc(payout.playerName)} · ${payout.kind === 'refund' ? '退还' : '赢得'}</span>
+        <strong>+${payout.amount}</strong>
+      </div>
+    `).join('');
+    $('#action-buttons').innerHTML = `
+      <div class="settlement-preview">${rows}</div>
+      <button class="btn btn-xs btn-secondary" data-action="cancel-settlement">返回修改</button>
+      <button class="btn btn-xs btn-primary" data-action="commit-settlement">确认结算</button>
+    `;
+    return;
+  }
   // 候选：所有未弃牌者（含挂机）。断线挂机仍占座争夺底池，物理牌桌上牌仍在，必须能选胜。
   const activePlayers = state.players.filter((p) => !p.isFolded);
   const tierIndex = selectedTiers.length; // 0 = 第1名
   const tierLabel = tierIndex === 0 ? '第 1 名（可并列选平手）' : `第 ${tierIndex + 1} 名`;
 
-  $('#action-hint').textContent = `摊牌 · 选择${tierLabel}（有边池时请用「下一档」排完）`;
+  const headsUp = activePlayers.length === 2;
+  $('#action-hint').textContent = headsUp
+    ? '摊牌 · 点选获胜者，预览后再结算'
+    : `摊牌 · 选择${tierLabel}（有边池时请用「下一档」排完）`;
 
   const confirmDisabled = currentTier.size === 0 && selectedTiers.length === 0 ? ' style="opacity:.4;pointer-events:none"' : '';
   const nextDisabled = currentTier.size === 0 ? ' style="opacity:.4;pointer-events:none"' : '';
-  const undoBtn = selectedTiers.length > 0
+  const undoBtn = !headsUp && selectedTiers.length > 0
     ? '<button class="btn btn-xs btn-secondary" data-action="undo-tier">上一档</button>'
     : '';
 
@@ -281,13 +328,13 @@ function renderShowdown(state, myPlayerId) {
     const tag = p.isSittingOut ? '·暂离' : '';
     return `<button class="btn btn-xs ${sel ? 'btn-primary' : 'btn-secondary'}" data-winner="${p.id}">${esc(p.name)}${tag}</button>`;
   }).join('')
-    + `<button class="btn btn-xs btn-secondary" data-action="next-tier"${nextDisabled}>下一档</button>`
+    + (headsUp ? '' : `<button class="btn btn-xs btn-secondary" data-action="next-tier"${nextDisabled}>下一档</button>`)
     + undoBtn
     + `<button class="btn btn-xs btn-primary" data-action="confirm-tiers"${confirmDisabled}>确认结算</button>`;
 }
 
 /** 本轮下注是否完成（前后端同源逻辑） */
-export function isRoundComplete(state) {
+function legacyIsRoundComplete(state) {
   if (!state) return false;
   const actionable = state.players.filter((p) => !p.isFolded && p.isActive && !p.isAllIn && !p.isSittingOut);
   if (actionable.length === 0) return true;

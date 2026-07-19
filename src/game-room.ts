@@ -1,6 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
-import type { Player, Action, GameState, ClientMessage, PublicGameState } from './types';
-import { DEFAULT_CHIPS, DEFAULT_SMALL_BLIND, DEFAULT_BIG_BLIND, ROOM_TTL_MS, getRoundName } from './types';
+import type { Player, Action, GameState, ClientMessage, PublicGameState, SettlementPreview, SidePot } from './types';
+import { DEFAULT_CHIPS, DEFAULT_SMALL_BLIND, DEFAULT_BIG_BLIND, ROOM_TTL_MS, SERVER_VERSION, getRoundName } from './types';
+import { buildSettlementPayouts, planPotsByTiers } from './pot-settlement';
 import type { Env } from './env';
 
 interface SocketAttachment {
@@ -68,7 +69,6 @@ export class GameRoom extends DurableObject<Env> {
         bigBlind: DEFAULT_BIG_BLIND,
         handNumber: 0,
         lastAction: '',
-        lastActor: '',
         lastWinnerIds: [],
         communityCards: 0,
         createdAt: Date.now(),
@@ -191,6 +191,8 @@ export class GameRoom extends DurableObject<Env> {
 
   async webSocketMessage(ws: WebSocket, message: string): Promise<void> {
     await this.ready;
+    // alarm 已开始销毁后，旧连接可能仍有排队消息；禁止其再次落盘复活房间。
+    if (this.expired || !this.game) return;
     try {
       const msg: ClientMessage = JSON.parse(message);
       const stateBefore = JSON.stringify(this.game);
@@ -209,6 +211,9 @@ export class GameRoom extends DurableObject<Env> {
           break;
         case 'nextRound':
           await this.handleNextRound(ws);
+          break;
+        case 'previewEndHand':
+          await this.handlePreviewEndHand(ws, msg.tiers, msg.winnerIds);
           break;
         case 'endHand':
           await this.handleEndHand(ws, msg.tiers, msg.winnerIds);
@@ -240,6 +245,11 @@ export class GameRoom extends DurableObject<Env> {
 
   async webSocketClose(ws: WebSocket): Promise<void> {
     await this.ready;
+    // alarm 关闭连接会触发 close 回调。销毁阶段只清连接缓存，绝不 save 已删除状态。
+    if (this.expired || !this.game) {
+      this.connections.delete(ws);
+      return;
+    }
     const playerId = this.playerIdFor(ws);
     if (playerId && this.game) {
       const player = this.game.players.find(p => p.id === playerId);
@@ -254,7 +264,7 @@ export class GameRoom extends DurableObject<Env> {
   }
 
   async webSocketError(_ws: WebSocket, error: Error): Promise<void> {
-    console.error('WebSocket error:', error.message);
+    console.error(JSON.stringify({ message: 'WebSocket error', error: error.message }));
   }
 
   private async handleJoin(
@@ -517,8 +527,6 @@ export class GameRoom extends DurableObject<Env> {
     }
 
     player.hasActedThisRound = true;
-    this.game.lastActor = player.name;
-
     // 仍在争夺底池的玩家 = 未弃牌（断线挂机者仍占座、仍争夺，不算退出）。
     // 只有真正 fold 才算退出争夺，避免"一人断线→另一人直接赢"。
     const contestingPlayers = this.game.players.filter(p => !p.isFolded);
@@ -648,9 +656,9 @@ export class GameRoom extends DurableObject<Env> {
     this.broadcast();
   }
 
-  private async handleStartHand(_ws: WebSocket): Promise<void> {
+  private async handleStartHand(ws: WebSocket): Promise<void> {
     if (this.game.round !== 'waiting') {
-      this.sendToAll('当前手牌尚未结束');
+      this.sendError(ws, '当前手牌尚未结束');
       return;
     }
 
@@ -659,7 +667,7 @@ export class GameRoom extends DurableObject<Env> {
     });
     const connectedPlayers = this.game.players.filter(p => p.isActive);
     if (connectedPlayers.length < 2) {
-      this.sendToAll('至少需要 2 名在线且有筹码的玩家才能开始');
+      this.sendError(ws, '至少需要 2 名在线且有筹码的玩家才能开始');
       this.broadcast();
       return;
     }
@@ -802,47 +810,79 @@ export class GameRoom extends DurableObject<Env> {
     }
   }
 
-  private async handleEndHand(_ws: WebSocket, tiers: string[][] | undefined, winnerIds: string[] | undefined): Promise<void> {
-    if (this.game.round !== 'showdown') {
-      this.sendToAll('当前不在摊牌阶段');
-      return;
-    }
-
-    // 统一成排名分档：tiers 优先；旧客户端只发 winnerIds 时包装成单层（第 1 名并列）。
-    let normalized: string[][];
-    if (tiers && tiers.length > 0) {
-      normalized = tiers.filter(t => Array.isArray(t) && t.length > 0);
-    } else if (winnerIds && winnerIds.length > 0) {
-      normalized = [winnerIds];
-    } else {
-      this.sendToAll('请至少选择一位获胜者');
-      return;
-    }
+  private normalizeAndValidateTiers(
+    tiers: string[][] | undefined,
+    winnerIds: string[] | undefined,
+  ): { ok: true; tiers: string[][] } | { ok: false; message: string } {
+    const normalized = tiers && tiers.length > 0
+      ? tiers.filter(tier => Array.isArray(tier) && tier.length > 0)
+      : winnerIds && winnerIds.length > 0
+        ? [winnerIds]
+        : [];
     if (normalized.length === 0) {
-      this.sendToAll('请至少选择一位获胜者');
-      return;
+      return { ok: false, message: '请至少选择一位获胜者' };
     }
 
-    // 校验：所有 id 必须存在、未弃牌、且不在多个档位重复。
     const seen = new Set<string>();
     for (const tier of normalized) {
       for (const id of tier) {
         if (seen.has(id)) {
-          this.sendToAll('同一玩家不能出现在多个名次档位');
-          return;
+          return { ok: false, message: '同一玩家不能出现在多个名次档位' };
         }
         seen.add(id);
-        const p = this.game.players.find(pp => pp.id === id);
-        if (!p || p.isFolded) {
-          this.sendToAll('所选胜者无效');
-          return;
+        const player = this.game.players.find(candidate => candidate.id === id);
+        if (!player || player.isFolded) {
+          return { ok: false, message: '所选胜者无效' };
         }
       }
     }
+    return { ok: true, tiers: normalized };
+  }
 
-    const result = this.awardPotsByTiers(normalized);
+  private async handlePreviewEndHand(
+    ws: WebSocket,
+    tiers: string[][] | undefined,
+    winnerIds: string[] | undefined,
+  ): Promise<void> {
+    if (this.game.round !== 'showdown') {
+      this.sendError(ws, '当前不在摊牌阶段');
+      return;
+    }
+    const normalized = this.normalizeAndValidateTiers(tiers, winnerIds);
+    if (!normalized.ok) {
+      this.sendError(ws, normalized.message);
+      return;
+    }
+    const result = planPotsByTiers(this.game.players, this.game.pot, normalized.tiers);
     if (!result.ok) {
-      this.sendToAll(result.message);
+      this.sendError(ws, result.message);
+      return;
+    }
+    const preview: SettlementPreview = {
+      total: result.plans.reduce((sum, plan) => sum + plan.amount, 0),
+      pots: result.plans.map(plan => ({
+        amount: plan.amount,
+        winnerIds: plan.winnerIds.slice(),
+        refund: plan.refund,
+      })),
+      payouts: buildSettlementPayouts(result.plans, this.game.players),
+    };
+    try { ws.send(JSON.stringify({ type: 'preview', preview })); } catch { /* connection closed */ }
+  }
+
+  private async handleEndHand(ws: WebSocket, tiers: string[][] | undefined, winnerIds: string[] | undefined): Promise<void> {
+    if (this.game.round !== 'showdown') {
+      this.sendError(ws, '当前不在摊牌阶段');
+      return;
+    }
+    const normalized = this.normalizeAndValidateTiers(tiers, winnerIds);
+    if (!normalized.ok) {
+      this.sendError(ws, normalized.message);
+      return;
+    }
+    const result = this.awardPotsByTiers(normalized.tiers);
+    if (!result.ok) {
+      this.sendError(ws, result.message);
       return;
     }
     this.game.round = 'waiting';
@@ -864,86 +904,29 @@ export class GameRoom extends DurableObject<Env> {
    */
   private awardPotsByTiers(tiers: string[][]): { ok: true } | { ok: false; message: string } {
     const players = this.game.players;
-    const contributors = players.filter(p => p.totalBet > 0);
-    if (contributors.length === 0 || this.game.pot <= 0) return { ok: true };
-
-    const levelSet = new Set<number>();
-    for (const p of contributors) levelSet.add(p.totalBet);
-    const levels = Array.from(levelSet).sort((a, b) => a - b);
-
-    type LayerPlan = {
-      potTotal: number;
-      winningIds: string[];
-      refund?: boolean;
-    };
-    const plans: LayerPlan[] = [];
-    let prevLevel = 0;
-
-    for (const level of levels) {
-      const layerAmount = level - prevLevel;
-      prevLevel = level;
-      if (layerAmount <= 0) continue;
-
-      const contributorsAtLayer = contributors.filter(p => p.totalBet >= level);
-      const potTotal = layerAmount * contributorsAtLayer.length;
-      if (potTotal <= 0) continue;
-
-      const eligible = contributorsAtLayer.filter(p => !p.isFolded);
-      const eligibleIds = new Set(eligible.map(p => p.id));
-
-      // 无人有资格：退还该层全部贡献者（典型：超额加注后全弃，或仅弃牌者留在更高层）
-      if (eligibleIds.size === 0) {
-        plans.push({
-          potTotal,
-          winningIds: contributorsAtLayer.map(p => p.id),
-          refund: true,
-        });
-        continue;
-      }
-
-      let winningIds: string[] = [];
-      for (const tier of tiers) {
-        const matched = tier.filter(id => eligibleIds.has(id));
-        if (matched.length > 0) {
-          winningIds = matched;
-          break;
-        }
-      }
-
-      // tiers 未覆盖该层：单人合格 → 自动归其（未跟注退还）；多人 → 要求补排名
-      if (winningIds.length === 0) {
-        if (eligibleIds.size === 1) {
-          winningIds = [eligible[0].id];
-        } else {
-          const names = eligible.map(p => p.name).join('、');
-          return {
-            ok: false,
-            message: `边池尚未排完名次，请继续选择（涉及：${names}）`,
-          };
-        }
-      }
-
-      plans.push({ potTotal, winningIds });
-    }
+    const result = planPotsByTiers(players, this.game.pot, tiers);
+    if (!result.ok) return result;
 
     // 两阶段：先规划成功，再动筹码，避免半结算。
-    const pots: { amount: number; winnerIds: string[] }[] = [];
+    const pots: SidePot[] = [];
     const winnerNames: string[] = [];
     const allWinnerIds = new Set<string>();
     const potBefore = this.game.pot;
 
-    for (const plan of plans) {
-      const share = Math.floor(plan.potTotal / plan.winningIds.length);
-      const remainder = plan.potTotal - share * plan.winningIds.length;
-      for (let i = 0; i < plan.winningIds.length; i++) {
-        const winner = players.find(p => p.id === plan.winningIds[i]);
+    for (const plan of result.plans) {
+      const share = Math.floor(plan.amount / plan.winnerIds.length);
+      const remainder = plan.amount - share * plan.winnerIds.length;
+      for (let i = 0; i < plan.winnerIds.length; i++) {
+        const winner = players.find(p => p.id === plan.winnerIds[i]);
         if (winner) {
           winner.chips += share + (i === 0 ? remainder : 0);
-          allWinnerIds.add(winner.id);
-          if (!winnerNames.includes(winner.name)) winnerNames.push(winner.name);
+          if (!plan.refund) {
+            allWinnerIds.add(winner.id);
+            if (!winnerNames.includes(winner.name)) winnerNames.push(winner.name);
+          }
         }
       }
-      pots.push({ amount: plan.potTotal, winnerIds: plan.winningIds.slice() });
+      pots.push({ amount: plan.amount, winnerIds: plan.winnerIds.slice(), refund: plan.refund });
     }
 
     this.game.lastWinnerIds = Array.from(allWinnerIds);
@@ -952,9 +935,9 @@ export class GameRoom extends DurableObject<Env> {
       const names = p.winnerIds
         .map(id => players.find(pp => pp.id === id)?.name || '?')
         .join('、');
-      return `${names} ${p.amount}`;
+      return p.refund ? `${names} 退还 ${p.amount}` : `${names} ${p.amount}`;
     }).join(' | ');
-    this.game.lastAction = pots.length > 1
+    this.game.lastAction = pots.length > 1 || pots[0]?.refund
       ? `${breakdown}（已按主池/边池结算）`
       : `${winnerNames.join('、')} 赢得 ${potBefore} 筹码`;
     this.game.pot = 0;
@@ -1033,22 +1016,23 @@ export class GameRoom extends DurableObject<Env> {
     this.broadcast();
   }
 
-  private async handleSettings(_ws: WebSocket, settings: Partial<Pick<GameState, 'smallBlind' | 'bigBlind'>>): Promise<void> {
+  private async handleSettings(ws: WebSocket, settings: Partial<Pick<GameState, 'smallBlind' | 'bigBlind'>>): Promise<void> {
     if (this.game.round !== 'waiting') {
-      this.sendToAll('游戏进行中不能修改盲注');
+      this.sendError(ws, '游戏进行中不能修改盲注');
       return;
     }
 
     const smallBlind = settings.smallBlind ?? this.game.smallBlind;
     const bigBlind = settings.bigBlind ?? this.game.bigBlind;
     if (!Number.isInteger(smallBlind) || !Number.isInteger(bigBlind) || smallBlind <= 0 || bigBlind <= smallBlind) {
-      this.sendToAll('盲注必须为正整数，且大盲必须大于小盲');
+      this.sendError(ws, '盲注必须为正整数，且大盲必须大于小盲');
       return;
     }
     this.game.smallBlind = smallBlind;
     this.game.bigBlind = bigBlind;
     this.game.lastAction = `盲注调整为 SB ${this.game.smallBlind} / BB ${this.game.bigBlind}`;
     this.broadcast();
+    this.sendNoticeToAll(this.game.lastAction);
   }
 
   private broadcast(yourPlayerId?: string): void {
@@ -1070,9 +1054,9 @@ export class GameRoom extends DurableObject<Env> {
     try { ws.send(JSON.stringify({ type: 'error', message })); } catch { /* ignore */ }
   }
 
-  private sendToAll(message: string): void {
+  private sendNoticeToAll(message: string): void {
     for (const ws of this.ctx.getWebSockets()) {
-      try { ws.send(JSON.stringify({ type: 'error', message })); } catch { /* ignore */ }
+      try { ws.send(JSON.stringify({ type: 'notice', message })); } catch { /* ignore */ }
     }
   }
 
@@ -1101,9 +1085,12 @@ export class GameRoom extends DurableObject<Env> {
       bigBlind: this.game.bigBlind,
       handNumber: this.game.handNumber,
       lastAction: this.game.lastAction,
-      lastActor: this.game.lastActor,
       lastWinnerIds: this.game.lastWinnerIds,
       communityCards: this.game.communityCards,
+      roundComplete: ['preflop', 'flop', 'turn', 'river'].includes(this.game.round)
+        && this.isRoundComplete(),
+      expiresAt: this.game.expiresAt,
+      serverVersion: SERVER_VERSION,
       sidePots: this.game.sidePots,
     };
   }

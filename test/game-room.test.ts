@@ -58,6 +58,10 @@ class TestSocket {
   errors(): any[] {
     return this.messages.filter(m => m.type === 'error');
   }
+
+  previews(): any[] {
+    return this.messages.filter(m => m.type === 'preview');
+  }
 }
 
 describe('GameRoom 基础流程', () => {
@@ -185,6 +189,38 @@ describe('GameRoom 手牌流程', () => {
     let state = await fetchState(stub, 'ROOM05');
     expect(state.round).toBe('preflop');
     expect(state.currentPlayerIndex).toBe((state.dealerIndex + 3) % 3);
+  });
+
+  it('单挑翻牌后由 BB 先行动', async () => {
+    const stub = await initRoom('HEAD01');
+    const sockets: WebSocket[] = [];
+    for (const name of ['A', 'B']) {
+      const socket = new TestSocket();
+      const ws = await socket.connect(stub, 'HEAD01');
+      socket.send(ws, { type: 'join', name });
+      sockets.push(ws);
+    }
+    await new Promise(resolve => setTimeout(resolve, 80));
+
+    sockets[0].send(JSON.stringify({ type: 'startHand' }));
+    await new Promise(resolve => setTimeout(resolve, 50));
+    let state = await fetchState(stub, 'HEAD01');
+    const dealerIndex = state.dealerIndex;
+    const bbIndex = (dealerIndex + 1) % 2;
+
+    sockets[dealerIndex].send(JSON.stringify({ type: 'action', action: 'call' }));
+    await new Promise(resolve => setTimeout(resolve, 40));
+    sockets[bbIndex].send(JSON.stringify({ type: 'action', action: 'check' }));
+    await new Promise(resolve => setTimeout(resolve, 40));
+    state = await fetchState(stub, 'HEAD01');
+    expect(state.roundComplete).toBe(true);
+
+    sockets[0].send(JSON.stringify({ type: 'nextRound' }));
+    await new Promise(resolve => setTimeout(resolve, 50));
+    state = await fetchState(stub, 'HEAD01');
+    expect(state.round).toBe('flop');
+    expect(state.currentPlayerIndex).toBe(bbIndex);
+    expect(state.roundComplete).toBe(false);
   });
 });
 
@@ -315,6 +351,35 @@ describe('GameRoom 极限与异常场景', () => {
     await new Promise(r => setTimeout(r, 50));
     state = await fetchState(stub, 'ROOM08');
     expect(state.pot).toBe(2000);
+  });
+
+  it('不足额 all-in 不重开已经行动玩家的标志', async () => {
+    const stub = await initRoom('SHORT1', 500, 600);
+    const sockets: WebSocket[] = [];
+    for (const name of ['A', 'B', 'C']) {
+      const socket = new TestSocket();
+      const ws = await socket.connect(stub, 'SHORT1');
+      socket.send(ws, { type: 'join', name });
+      sockets.push(ws);
+    }
+    await new Promise(resolve => setTimeout(resolve, 80));
+
+    sockets[0].send(JSON.stringify({ type: 'startHand' }));
+    await new Promise(resolve => setTimeout(resolve, 50));
+    let state = await fetchState(stub, 'SHORT1');
+    expect(state.currentPlayerIndex).toBe(0);
+
+    // A 已跟到 600；SB B 仅余 500，全押后把下注线抬到 1000，增量 400 < BB 600。
+    sockets[0].send(JSON.stringify({ type: 'action', action: 'call' }));
+    await new Promise(resolve => setTimeout(resolve, 40));
+    sockets[1].send(JSON.stringify({ type: 'action', action: 'raise', amount: 500 }));
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    state = await fetchState(stub, 'SHORT1');
+    expect(state.currentBet).toBe(1000);
+    expect(state.players[1].isAllIn).toBe(true);
+    // 不足额加注只要求 A 后续补跟，不能把他重置成“从未行动”。
+    expect(state.players[0].hasActedThisRound).toBe(true);
   });
 
   it('游戏进行中修改盲注应被拒绝', async () => {
@@ -567,6 +632,58 @@ describe('Side pot（边池）结算', () => {
     expect(Math.abs(aChips - bChips)).toBeLessThanOrEqual(1);
     expect(state.lastWinnerIds.length).toBe(2);
   });
+
+  it('结算预览只读，且深码未跟注退还不进入 lastWinnerIds', async () => {
+    const stub = await initRoom('REFD01', 10, 20);
+    const first = new TestSocket();
+    const firstWs = await first.connect(stub, 'REFD01');
+    first.send(firstWs, { type: 'join', name: 'A' });
+    const second = new TestSocket();
+    const secondWs = await second.connect(stub, 'REFD01');
+    second.send(secondWs, { type: 'join', name: 'B' });
+    await new Promise(resolve => setTimeout(resolve, 80));
+
+    let state = await fetchState(stub, 'REFD01');
+    const aId = state.players[0].id;
+    const bId = state.players[1].id;
+    second.send(secondWs, { type: 'rebuy', targetPlayerId: bId, amount: 1000 });
+    await new Promise(resolve => setTimeout(resolve, 40));
+    first.send(firstWs, { type: 'startHand' });
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    first.send(firstWs, { type: 'action', action: 'raise', amount: 1000 });
+    await new Promise(resolve => setTimeout(resolve, 40));
+    second.send(secondWs, { type: 'action', action: 'raise', amount: 500 });
+    await new Promise(resolve => setTimeout(resolve, 60));
+    state = await fetchState(stub, 'REFD01');
+    expect(state.round).toBe('showdown');
+    expect(state.pot).toBe(2500);
+    const chipsBeforePreview = state.players.map(player => player.chips);
+
+    first.send(firstWs, { type: 'previewEndHand', tiers: [[aId]] });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const preview = first.previews().at(-1)?.preview;
+    expect(preview?.total).toBe(2500);
+    expect(preview?.payouts).toEqual([
+      { playerId: aId, playerName: 'A', amount: 2000, kind: 'win' },
+      { playerId: bId, playerName: 'B', amount: 500, kind: 'refund' },
+    ]);
+
+    state = await fetchState(stub, 'REFD01');
+    expect(state.round).toBe('showdown');
+    expect(state.pot).toBe(2500);
+    expect(state.players.map(player => player.chips)).toEqual(chipsBeforePreview);
+
+    first.send(firstWs, { type: 'endHand', tiers: [[aId]] });
+    await new Promise(resolve => setTimeout(resolve, 60));
+    state = await fetchState(stub, 'REFD01');
+    expect(state.round).toBe('waiting');
+    expect(state.lastWinnerIds).toEqual([aId]);
+    expect(state.sidePots).toEqual([
+      { amount: 2000, winnerIds: [aId] },
+      { amount: 500, winnerIds: [bId], refund: true },
+    ]);
+  });
 });
 
 describe('并发重连与盲注防御', () => {
@@ -621,6 +738,28 @@ describe('并发重连与盲注防御', () => {
 });
 
 describe('断线坐出(sitting-out)语义', () => {
+  it('两人局一人断线不会把底池自动判给另一人', async () => {
+    const stub = await initRoom('SIT2P1', 10, 20);
+    const first = new TestSocket();
+    const firstWs = await first.connect(stub, 'SIT2P1');
+    first.send(firstWs, { type: 'join', name: 'A' });
+    const second = new TestSocket();
+    const secondWs = await second.connect(stub, 'SIT2P1');
+    second.send(secondWs, { type: 'join', name: 'B' });
+    await new Promise(resolve => setTimeout(resolve, 80));
+
+    first.send(firstWs, { type: 'startHand' });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    secondWs.close();
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    const state = await fetchState(stub, 'SIT2P1');
+    expect(state.round).toBe('preflop');
+    expect(state.pot).toBe(30);
+    expect(state.lastWinnerIds).toHaveLength(0);
+    expect(state.players.filter(player => !player.isFolded)).toHaveLength(2);
+  });
+
   it('断线者轮到行动时纯跳过：行动权转给下一位，筹码/下注不变', async () => {
     const stub = await initRoom('SITOUT01', 10, 20);
     const socks: TestSocket[] = [];

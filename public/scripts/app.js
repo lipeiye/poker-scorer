@@ -1,11 +1,32 @@
 // 应用入口：粘合所有模块。负责状态流转、消息路由、庆祝弹窗、连接联动、SW 注册。
 // 不持有复杂逻辑，只把 socket 的消息分发给 render / feedback / ui。
-import { $, toast, showView, showModal, closeModal, closeTopModal, renderConnDot, applyDeepLink, installKeyboardAdapter } from './ui.js?v=9';
-import { connect, disconnect, onMessage, onConn, getMyPlayerId, setMyPlayerId, persistIdentity, getCurrentRoomId, getCurrentName } from './socket.js?v=9';
-import { deviceId, getSavedPlayer } from './storage.js?v=9';
-import { render, renderActionBar, clearSelectedWinners, toggleWinner, isMyTurn } from './render.js?v=9';
-import { sendAction, onFoldClick, doRaise, showRaise, adjustRaise, onRaiseInput, doAllIn, confirmTiers, nextTier, prevTier, startHand, nextRound, updateSettings, rebuy, removePlayer } from './actions.js?v=9';
-import { notifyMyTurn } from './feedback.js?v=9';
+import { $, toast, showView, showModal, closeModal, closeTopModal, renderConnDot, applyDeepLink, installKeyboardAdapter } from './ui.js?v=12';
+import { connect, disconnect, onMessage, onConn, getMyPlayerId, setMyPlayerId, persistIdentity, getCurrentRoomId, getCurrentName } from './socket.js?v=12';
+import { deviceId, getSavedPlayer } from './storage.js?v=12';
+import { render, renderActionBar, clearSelectedWinners, selectSoleWinner, toggleWinner, isMyTurn } from './render.js?v=12';
+import {
+  applySettlementPreview,
+  cancelSettlementPreview,
+  commitSettlement,
+  handleSettlementError,
+  resetSettlementFlow,
+  sendAction,
+  onFoldClick,
+  doRaise,
+  showRaise,
+  adjustRaise,
+  onRaiseInput,
+  doAllIn,
+  confirmTiers,
+  nextTier,
+  prevTier,
+  startHand,
+  nextRound,
+  updateSettings,
+  rebuy,
+  removePlayer,
+} from './actions.js?v=12';
+import { notifyMyTurn } from './feedback.js?v=12';
 
 // 应用级状态
 let state = null;
@@ -37,7 +58,12 @@ onMessage((msg) => {
   if (msg.type === 'state') {
     onState(msg.state);
   } else if (msg.type === 'error') {
+    handleSettlementError();
     toast(msg.message, 2000);
+  } else if (msg.type === 'notice') {
+    toast(msg.message, 2000);
+  } else if (msg.type === 'preview') {
+    if (applySettlementPreview(msg.preview) && state) renderActionBar(state, myPlayerId);
   } else if (msg.type === '_disconnected') {
     onDisconnected();
   }
@@ -76,7 +102,11 @@ $('#action-bar').addEventListener('click', (e) => {
   const dir = parseInt(btn.dataset.dir || '0', 10);
 
   if (winner) {
-    toggleWinner(winner);
+    const contestingCount = state
+      ? state.players.filter((player) => !player.isFolded).length
+      : 0;
+    if (contestingCount === 2) selectSoleWinner(winner);
+    else toggleWinner(winner);
     if (state) renderActionBar(state, myPlayerId);
     return;
   }
@@ -93,6 +123,8 @@ $('#action-bar').addEventListener('click', (e) => {
     case 'next-tier': nextTier(); if (state) renderActionBar(state, myPlayerId); break;
     case 'undo-tier': prevTier(); if (state) renderActionBar(state, myPlayerId); break;
     case 'confirm-tiers': confirmTiers(); break;
+    case 'commit-settlement': commitSettlement(); break;
+    case 'cancel-settlement': cancelSettlementPreview(); if (state) renderActionBar(state, myPlayerId); break;
   }
 });
 
@@ -117,6 +149,7 @@ $('#raise-amount').addEventListener('input', () => {
 function onState(s) {
   const prev = state;
   state = s;
+  if (s.round !== 'showdown') resetSettlementFlow();
   if (s.yourPlayerId) {
     myPlayerId = s.yourPlayerId;
     setMyPlayerId(s.yourPlayerId);
@@ -180,11 +213,14 @@ function maybeShowSettlementToast(s) {
   if (lastSettlementKey === key) return;
   lastSettlementKey = key;
   const parts = s.sidePots.map(p => {
-    const names = (p.winnerIds || []).map(id => {
+    const winnerIds = p.winnerIds || [];
+    const share = winnerIds.length > 0 ? Math.floor(p.amount / winnerIds.length) : 0;
+    const remainder = p.amount - share * winnerIds.length;
+    const allocations = winnerIds.map((id, index) => {
       const player = s.players.find(pp => pp.id === id);
-      return player ? player.name : '?';
+      return `${player ? player.name : '?'} +${share + (index === 0 ? remainder : 0)}`;
     }).join('、');
-    return `${names} +${p.amount}`;
+    return p.refund ? `${allocations}（退还）` : allocations;
   });
   toast('结算：' + parts.join(' | '), 4000);
 }

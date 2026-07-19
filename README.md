@@ -30,10 +30,12 @@
 4. 至少 2 人在线且有筹码 → **开始游戏**。
 5. 轮到你时底部出现操作栏：弃牌 / 过牌或跟注 / 加注 / 全押。
 6. 本轮下注结束后点 **下一轮**（全员 all-in 等无法再对峙时会自动进摊牌）。
-7. 摊牌：按牌力从强到弱选名次档位（可并列；有边池时用「下一档」排完）→ **确认结算**。
+7. 摊牌：按牌力从强到弱选名次档位（可并列；有边池时用「下一档」排完）→ 查看服务端给出的「谁赢多少」预览 → **确认结算**。
 8. 回到大厅，可继续下一手或补码。
 
 **断线行为（刻意设计）**：手牌中断线的人**不会被弃牌**，只坐出挂机（占座、保底池权益、跳过行动）。本手内重连仍挂机，**下一手发牌**才复活。大厅里会显示「已离线 N 分钟」，方便桌上的人决定是否移除。
+
+**信任模型**：本桌没有房主权限，任何在线玩家都能开始游戏、改盲注、结算与补码；相关高风险操作有确认/预览保护，仍请在操作前桌内口头确认。
 
 ---
 
@@ -48,7 +50,7 @@
 | 前端 | 零构建 ES Module + 原生 CSS，PWA |
 | 后端语言 | TypeScript |
 | 测试 | Vitest + `@cloudflare/vitest-pool-workers` |
-| 部署 | `wrangler deploy`（无 CI/CD） |
+| 验证 / 部署 | GitHub Actions（typecheck + test）/ `wrangler deploy` 手动生产部署 |
 
 核心设计：**瘦客户端**——前端只渲染后端下发的 `PublicGameState` / `currentPlayerIndex`，游戏判决全在 `GameRoom` 内串行执行。
 
@@ -61,6 +63,7 @@ poker-scorer/
 ├── src/
 │   ├── index.ts          # Worker 入口：HTTP 路由、建房、转发到 DO
 │   ├── game-room.ts      # GameRoom DO：全部游戏逻辑 + WebSocket（核心）
+│   ├── pot-settlement.ts # 主池/边池只读规划与精确预览
 │   ├── room-registry.ts  # RoomRegistry DO：房号唯一性
 │   ├── types.ts          # 类型、常量、房号生成
 │   └── env.ts            # Env 类型（继承 Cloudflare 生成绑定）
@@ -71,7 +74,9 @@ poker-scorer/
 │   ├── manifest.webmanifest
 │   └── scripts/          # 前端模块（见技术文档）
 ├── test/
-│   └── game-room.test.ts # 端到端风格 DO 测试
+│   ├── game-room.test.ts # 端到端风格 DO 测试
+│   └── pot-settlement.test.ts # 纯结算规划测试
+├── .github/workflows/ci.yml # push/PR 自动验证
 ├── docs/
 │   └── TECHNICAL.md      # 完整技术文档
 ├── wrangler.toml
@@ -96,13 +101,14 @@ npm run dev          # wrangler dev，本地模拟 Worker + DO + 静态资源
 npm run typecheck    # tsc --noEmit
 npm test             # vitest（Cloudflare workers pool，沙箱里可能较慢）
 npm run check        # typecheck + test + wrangler dry-run
-npm run deploy       # 部署到 Cloudflare Workers
+npm run deploy       # 打印发布检查清单后部署到 Cloudflare Workers
 npm run tail         # 线上实时日志
 ```
 
 ### 部署注意
 
 - 后端改动**没有热更新**，必须 `npm run deploy` 后才对线上生效。
+- 发布前同步更新 `SERVER_VERSION`、静态资源 `?v=` 与 Service Worker `CACHE`；`predeploy` 会打印检查清单。
 - DO 房间状态跨部署保留；进行中的一手牌不会自动重写，**下一手/下一轮**才走新代码。
 - `wrangler.toml` 必须保持 `new_sqlite_classes`（Free Tier 只支持 SQLite-backed DO）。**不要**改回 `new_classes`。
 - 房号字符集为 `A-Z2-9` 且排除 `0/1`（防与 O/I 混淆）。自造含 0/1 的路径会落到静态资源而报错，属正常。
@@ -145,6 +151,6 @@ npm run tail         # 线上实时日志
 |------|------|
 | [README.md](./README.md) | 产品说明、上手、结构、部署入口 |
 | [docs/TECHNICAL.md](./docs/TECHNICAL.md) | 架构、协议、关键逻辑、不变量、前后端同源清单、运维 |
-| [docs/RISKS_AND_IMPROVEMENTS.md](./docs/RISKS_AND_IMPROVEMENTS.md) | 风险速查 + **AI 可单卡执行的改进任务**（T01–T25，按 200k 窗口裁切） |
+| [docs/RISKS_AND_IMPROVEMENTS.md](./docs/RISKS_AND_IMPROVEMENTS.md) | 风险速查 + **AI 可单卡执行的改进任务**（T01–T26，按 200k 窗口裁切） |
 
 历史 WORKLOG / 审计手册 / Agent 导航中的稳定结论已并入技术文档与风险评估文档。

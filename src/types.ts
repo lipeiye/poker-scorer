@@ -49,7 +49,6 @@ export interface GameState {
   bigBlind: number;
   handNumber: number;
   lastAction: string;
-  lastActor: string;
   /** 最近一手牌的获胜玩家，用于客户端庆祝提示 */
   lastWinnerIds: string[];
   /** 公共牌数量: 0/3/4/5 */
@@ -67,11 +66,26 @@ export interface GameState {
 export interface SidePot {
   amount: number;
   winnerIds: string[];
+  /** 未跟注筹码/超额投入退还；不应触发赢家庆祝。 */
+  refund?: boolean;
+}
+
+export interface SettlementPayout {
+  playerId: string;
+  playerName: string;
+  amount: number;
+  kind: 'win' | 'refund';
+}
+
+export interface SettlementPreview {
+  total: number;
+  pots: SidePot[];
+  payouts: SettlementPayout[];
 }
 
 /** 客户端 → 服务端消息 */
 export interface ClientMessage {
-  type: 'join' | 'leave' | 'action' | 'startHand' | 'nextRound' | 'endHand' | 'updateSettings' | 'rebuy' | 'removePlayer' | 'sync' | 'ping';
+  type: 'join' | 'leave' | 'action' | 'startHand' | 'nextRound' | 'previewEndHand' | 'endHand' | 'updateSettings' | 'rebuy' | 'removePlayer' | 'sync' | 'ping';
   name?: string;
   playerId?: string;
   deviceId?: string;
@@ -90,9 +104,10 @@ export interface ClientMessage {
 
 /** 服务端 → 客户端消息 */
 export interface ServerMessage {
-  type: 'state' | 'error' | 'pong';
+  type: 'state' | 'error' | 'notice' | 'preview' | 'pong';
   state?: PublicGameState;
   message?: string;
+  preview?: SettlementPreview;
 }
 
 /** 公开的游戏状态（发送给客户端） */
@@ -108,9 +123,14 @@ export interface PublicGameState {
   bigBlind: number;
   handNumber: number;
   lastAction: string;
-  lastActor: string;
   lastWinnerIds: string[];
   communityCards: number;
+  /** 下注轮是否完成；前端据此显示「下一轮」。 */
+  roundComplete: boolean;
+  /** 房间 7 天 TTL 的绝对时间戳。 */
+  expiresAt: number;
+  /** 当前后端构建标识，便于排查客户端缓存。 */
+  serverVersion: string;
   /** 最近一次结算的主池/边池明细（仅结算后短暂存在） */
   sidePots?: SidePot[];
   /** 你的玩家 ID（仅发送给该连接） */
@@ -153,3 +173,6 @@ export const DEFAULT_BIG_BLIND = 20;
 
 /** 房间创建 7 天后彻底过期 */
 export const ROOM_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** 每次生产发布前手动更新；客户端可据此判断是否需要强刷。 */
+export const SERVER_VERSION = '2026.07.19.1';
