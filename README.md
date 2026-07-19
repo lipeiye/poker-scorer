@@ -1,62 +1,150 @@
-# Poker Scorer
+# 德扑积分器（poker-scorer）
 
-部署在 Cloudflare Workers Free Tier 的实时德州扑克计分器（不发牌、不洗牌，只记筹码 / 盲注 / 行动轮转）。物理牌桌上的人打牌，本应用负责记录每手牌的筹码流动、盲注轮转和行动顺序。
+线下德州扑克**计分器**：不发牌、不洗牌、不判定牌力。物理牌桌上的人打牌，这个网站只负责记筹码、盲注、行动顺序、底池与主池/边池结算。
 
-## 文档
+适合朋友聚会：手机打开即用，PWA 可装到主屏，断线自动挂机不误 fold。
 
-| 文档 | 内容 |
-|------|------|
-| [README.md](./README.md) | 本文件：项目概览与快速上手 |
-| [docs/TECHNICAL.md](./docs/TECHNICAL.md) | 完整技术文档：架构、协议、关键逻辑、不变量、已知问题 |
+线上地址：https://poker-scorer.1956133426lpy.workers.dev/
 
-## 架构
+更完整的架构、协议、规则不变量与实现细节见 **[docs/TECHNICAL.md](./docs/TECHNICAL.md)**。读完本 README + 技术文档，应能独立理解、修改与部署整个项目。
 
-- 静态页面由 Workers Static Assets 提供。
-- API 和 WebSocket 由 Worker 路由。
-- 每个房间映射到一个独立的 SQLite-backed Durable Object。
-- 同一房间内的操作由 Durable Object 串行处理，不同房间可以横向扩展。
-- WebSocket 使用 Hibernation API，并把玩家身份保存在 socket attachment 中；房间空闲时可以休眠，不会因长连接持续消耗运行时长。
+---
 
-## 本地运行
+## 它做什么 / 不做什么
 
-```bash
-npm install
-npm run dev
-```
+| 做 | 不做 |
+|----|------|
+| 创建/加入房间，最多 12 人 | 发牌、洗牌、算牌力 |
+| 记盲注、下注、跟注、加注、全押、弃牌 | 自动判定谁赢（由人在摊牌时选名次） |
+| 轮转行动权，推进翻牌前→翻牌→转牌→河牌→摊牌 | 账号密码、房主权限、匹配大厅 |
+| 主池/边池按排名分档结算 | 自动 straddle、最小加注=上次加注额（当前简化为大盲） |
+| 断线坐出、补码、移除离线占座 | 中途销毁进行中的手牌 |
 
-## 验证与部署
+---
 
-```bash
-npm run check
-npm run deploy
-```
+## 怎么用（线下场景）
 
-`wrangler.toml` 中必须使用：
+1. 一人点 **创建新牌局**，输入昵称 → 得到 6 位房间码，分享给朋友。
+2. 其他人输入房间码加入（或打开 `/?room=XXXXXX` 深链）。
+3. 大厅可改盲注、给任何人 **+码**（默认 +1000）、**移除**离线占座者。
+4. 至少 2 人在线且有筹码 → **开始游戏**。
+5. 轮到你时底部出现操作栏：弃牌 / 过牌或跟注 / 加注 / 全押。
+6. 本轮下注结束后点 **下一轮**（全员 all-in 等无法再对峙时会自动进摊牌）。
+7. 摊牌：按牌力从强到弱选名次档位（可并列；有边池时用「下一档」排完）→ **确认结算**。
+8. 回到大厅，可继续下一手或补码。
 
-```toml
-new_sqlite_classes = ["GameRoom"]
-```
+**断线行为（刻意设计）**：手牌中断线的人**不会被弃牌**，只坐出挂机（占座、保底池权益、跳过行动）。本手内重连仍挂机，**下一手发牌**才复活。大厅里会显示「已离线 N 分钟」，方便桌上的人决定是否移除。
 
-不要改回 `new_classes`，后者会创建旧式 KV-backed Durable Object，Workers Free Tier 不支持。
+---
 
-如果这个 Worker 的 `v1` 迁移以前已经成功创建过 KV-backed `GameRoom`，Cloudflare 不会把已存在的 namespace 原地转换为 SQLite。请先在 Cloudflare Dashboard 删除旧的 KV-backed Durable Object namespace（旧房间数据会被删除），然后再部署当前版本。若旧数据必须保留，应先在 Paid Plan 中导出并迁移数据。
+## 技术栈一览
 
-## Free Tier 容量边界
+| 层 | 选型 |
+|----|------|
+| 运行时 | Cloudflare Workers Free Tier |
+| 房间状态 | SQLite-backed Durable Object（每房一个 `GameRoom`） |
+| 房号目录 | Durable Object `RoomRegistry` |
+| 实时通信 | WebSocket + Hibernation API |
+| 前端 | 零构建 ES Module + 原生 CSS，PWA |
+| 后端语言 | TypeScript |
+| 测试 | Vitest + `@cloudflare/vitest-pool-workers` |
+| 部署 | `wrangler deploy`（无 CI/CD） |
 
-Cloudflare 的免费额度会变化，部署前应以官方文档为准。当前架构不会绕过平台每日总额度；它解决的是后端类型兼容、房间内一致性和房间间横向扩展。静态资源不进入 Worker 时不消耗 Worker 请求额度。
+核心设计：**瘦客户端**——前端只渲染后端下发的 `PublicGameState` / `currentPlayerIndex`，游戏判决全在 `GameRoom` 内串行执行。
+
+---
 
 ## 项目结构
 
 ```
 poker-scorer/
-├── src/                # 后端 TypeScript（Cloudflare Worker + Durable Objects）
-│   ├── index.ts        # HTTP 路由
-│   ├── game-room.ts    # GameRoom DO（核心游戏逻辑）
-│   ├── room-registry.ts# 房号注册 DO
-│   ├── types.ts        # 类型、常量、工具函数
-│   └── env.ts          # 环境绑定类型
-├── public/             # 前端静态资源（零构建 ES Module + 原生 CSS，PWA）
-├── test/               # Vitest 测试
-├── docs/TECHNICAL.md   # 完整技术文档
-└── README.md
+├── src/
+│   ├── index.ts          # Worker 入口：HTTP 路由、建房、转发到 DO
+│   ├── game-room.ts      # GameRoom DO：全部游戏逻辑 + WebSocket（核心）
+│   ├── room-registry.ts  # RoomRegistry DO：房号唯一性
+│   ├── types.ts          # 类型、常量、房号生成
+│   └── env.ts            # Env 类型（继承 Cloudflare 生成绑定）
+├── public/
+│   ├── index.html        # 单页：首页 / 大厅 / 牌局 + 模态框
+│   ├── styles.css        # 深色主题 + 移动端适配
+│   ├── sw.js             # Service Worker（壳缓存）
+│   ├── manifest.webmanifest
+│   └── scripts/          # 前端模块（见技术文档）
+├── test/
+│   └── game-room.test.ts # 端到端风格 DO 测试
+├── docs/
+│   └── TECHNICAL.md      # 完整技术文档
+├── wrangler.toml
+├── package.json
+└── README.md             # 本文件
 ```
+
+---
+
+## 本地开发
+
+```bash
+npm install
+npm run dev          # wrangler dev，本地模拟 Worker + DO + 静态资源
+```
+
+浏览器打开终端提示的本地地址即可。
+
+### 常用命令
+
+```bash
+npm run typecheck    # tsc --noEmit
+npm test             # vitest（Cloudflare workers pool，沙箱里可能较慢）
+npm run check        # typecheck + test + wrangler dry-run
+npm run deploy       # 部署到 Cloudflare Workers
+npm run tail         # 线上实时日志
+```
+
+### 部署注意
+
+- 后端改动**没有热更新**，必须 `npm run deploy` 后才对线上生效。
+- DO 房间状态跨部署保留；进行中的一手牌不会自动重写，**下一手/下一轮**才走新代码。
+- `wrangler.toml` 必须保持 `new_sqlite_classes`（Free Tier 只支持 SQLite-backed DO）。**不要**改回 `new_classes`。
+- 房号字符集为 `A-Z2-9` 且排除 `0/1`（防与 O/I 混淆）。自造含 0/1 的路径会落到静态资源而报错，属正常。
+
+---
+
+## 扑克规则速记（改代码前必读）
+
+完整说明与实现位置见技术文档「扑克规则不变量」一节。
+
+**行动顺序**
+
+- 座位：`position` 0=庄家 D / 1=小盲 SB / 2=大盲 BB / 3=UTG…
+- 多人：翻牌前 UTG 先动；翻牌后 SB 先动。
+- **单挑**：庄家即 SB；翻牌前 SB 先动；**翻牌后 BB 先动**（标准规则，不是 bug）。
+
+**断线坐出**
+
+- 可行动：`!isFolded && isActive && !isAllIn && !isSittingOut`
+- 争夺底池：`!isFolded`（含挂机，防止一人断线另一人独赢）
+- 绝不要改回「断线=弃牌」。
+
+---
+
+## 已知局限（可接受简化）
+
+这些在线下熟人局通常够用；改之前先读技术文档对应章节。
+
+- **最小加注增量**固定为大盲，不是标准 NLHE 的「上次加注额」。
+- **无 straddle**。
+- **无账号/房主**：任何在线玩家都能开局、改盲注、结算、补码、移除离线者。
+- **每日北京时间 04:00 清理**：房间在 **waiting** 时会被销毁；手牌进行中会推迟 15 分钟再检查。另有 **7 天 TTL**。
+- 摊牌胜者由人手选；边池要求按牌力**排完名次档位**，否则服务端拒绝结算并提示。
+
+---
+
+## 文档
+
+| 文档 | 用途 |
+|------|------|
+| [README.md](./README.md) | 产品说明、上手、结构、部署入口 |
+| [docs/TECHNICAL.md](./docs/TECHNICAL.md) | 架构、协议、关键逻辑、不变量、前后端同源清单、运维 |
+| [docs/RISKS_AND_IMPROVEMENTS.md](./docs/RISKS_AND_IMPROVEMENTS.md) | 风险评估、可瘦身点、改进路线与技术取舍 |
+
+历史 WORKLOG / 审计手册 / Agent 导航中的稳定结论已并入技术文档与风险评估文档。

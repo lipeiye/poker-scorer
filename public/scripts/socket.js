@@ -1,6 +1,6 @@
 // WebSocket 连接管理：建连、join、断线重连、连接状态广播、心跳保活。
 // 不直接碰 DOM（状态展示由 ui.js 订阅 onConn 完成），只对外暴露 send/事件。
-import { deviceId, getSavedPlayer, savePlayer } from './storage.js?v=8';
+import { deviceId, getSavedPlayer, savePlayer } from './storage.js?v=9';
 
 /** @typedef {'connected'|'connecting'|'offline'} ConnState */
 
@@ -191,10 +191,12 @@ function stopHeartbeat() {
 // ---------- 页面可见性：切回前台时立即重连 ----------
 
 if (typeof document !== 'undefined') {
-  // 切回前台：连接还在就补发一次 ping 立刻校验是否假死；已断则立即重连。
+  // 切回前台：连接还在就补发一次 ping 立刻校验是否假死，并请求重推最新牌局状态；
+  // 已断则立即重连（重连后会重新 join 拿到状态）。
   document.addEventListener('visibilitychange', () => {
     if (document.hidden || !currentRoomId || intentionalClose) return;
     if (isConnected()) {
+      send({ type: 'sync' });
       send({ type: 'ping' });
       clearTimeout(pongTimer);
       pongTimer = setTimeout(() => {

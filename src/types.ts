@@ -24,6 +24,9 @@ export interface Player {
   hasActedThisRound: boolean;
   /** 是否在线 */
   isConnected: boolean;
+  /** 最近一次断线时间戳（Date.now()）。在线时为 undefined。
+   *  用于前端展示「已离线 N 分钟」，让桌上的人判断是否该移除该占座者。 */
+  disconnectedAt?: number;
 }
 
 /** 游戏轮次 */
@@ -68,7 +71,7 @@ export interface SidePot {
 
 /** 客户端 → 服务端消息 */
 export interface ClientMessage {
-  type: 'join' | 'leave' | 'action' | 'startHand' | 'nextRound' | 'endHand' | 'updateSettings' | 'rebuy' | 'removePlayer' | 'ping';
+  type: 'join' | 'leave' | 'action' | 'startHand' | 'nextRound' | 'endHand' | 'updateSettings' | 'rebuy' | 'removePlayer' | 'sync' | 'ping';
   name?: string;
   playerId?: string;
   deviceId?: string;

@@ -1,6 +1,17 @@
 // 渲染层：根据后端 state 渲染大厅 / 游戏界面 / 摊牌 / 庆祝。
 // 只读 state、只写 DOM，不直接发消息（操作由 app.js 通过事件委托处理）。
-import { $, esc, showView } from './ui.js?v=8';
+import { $, esc, showView } from './ui.js?v=9';
+
+/** 把断线时间戳格式化成「已离线 N秒/N分钟/N小时」。无时间戳返回 '离线'。 */
+function formatOfflineDuration(disconnectedAt) {
+  if (!disconnectedAt) return '离线';
+  const sec = Math.max(0, Math.floor((Date.now() - disconnectedAt) / 1000));
+  if (sec < 60) return `已离线 ${sec}s`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `已离线 ${min}min`;
+  const hr = Math.floor(min / 60);
+  return `已离线 ${hr}h`;
+}
 
 /** 统一的"是否轮到我"判定（4 字段谓词），供 renderGame / renderActionBar / app.js 复用。
  *  与后端 game-room.ts advanceTurn 的跳过条件同源。 */
@@ -110,7 +121,7 @@ function renderLobby(state, myPlayerId) {
       : '';
     return `
     <div class="player-item${p.id === myPlayerId ? ' is-you' : ''}" data-initial="${esc((p.name || '?').charAt(0))}">
-      <span class="player-name">${esc(p.name)}${p.id === myPlayerId ? ' <span class="text-xs text-dim">(你)</span>' : ''}${!p.isConnected ? ' <span class="player-tag tag-offline">离线</span>' : ''}</span>
+      <span class="player-name">${esc(p.name)}${p.id === myPlayerId ? ' <span class="text-xs text-dim">(你)</span>' : ''}${!p.isConnected ? ` <span class="player-tag tag-offline">${formatOfflineDuration(p.disconnectedAt)}</span>` : ''}</span>
       <span class="player-chips-row">
         <span class="player-chips">${p.chips}</span>
         ${rebuyBtn}${removeBtn}
@@ -154,7 +165,7 @@ function renderGame(state, myPlayerId) {
       i === sbIdx ? '<span class="player-tag tag-sb">SB</span>' : '',
       i === bbIdx ? '<span class="player-tag tag-bb">BB</span>' : '',
       p.isAllIn ? '<span class="player-tag tag-allin">ALL</span>' : '',
-      p.isSittingOut ? '<span class="player-tag tag-offline">暂离</span>' : (!p.isConnected ? '<span class="player-tag tag-offline">离线</span>' : ''),
+      p.isSittingOut ? `<span class="player-tag tag-offline">暂离·${formatOfflineDuration(p.disconnectedAt)}</span>` : (!p.isConnected ? `<span class="player-tag tag-offline">${formatOfflineDuration(p.disconnectedAt)}</span>` : ''),
     ].join('');
 
     const isTurn = i === state.currentPlayerIndex && !p.isFolded && p.isActive && !p.isAllIn && !p.isSittingOut && state.round !== 'showdown' && state.round !== 'waiting';

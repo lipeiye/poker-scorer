@@ -1,8 +1,8 @@
 // M9: "轮到你"的强提示。手机锁屏/切后台时玩家也能感知。
 // 三种信号：屏幕内醒目横幅（视觉）、document.title 改动（tab/后台可见）、振动。
 // 音效已移除（Web Audio API 会导致 macOS/iOS 抢占 AirPods）。
-const TITLE_ON = '● 轮到你 — 德扑计分';
-const TITLE_IDLE = 'PK · 德扑计分';
+const TITLE_ON = '● 轮到你 — 德扑积分器';
+const TITLE_IDLE = '德扑积分器';
 
 let wasMyTurn = false;
 let bannerTimer = 0;

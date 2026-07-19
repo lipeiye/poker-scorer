@@ -1,7 +1,7 @@
 {
-  "name": "PK · 德扑计分",
-  "short_name": "PK计分",
-  "description": "实时德州扑克计分器，专注牌局，筹码交给我们。",
+  "name": "德扑积分器",
+  "short_name": "积分器",
+  "description": "线下德州扑克记分小工具",
   "start_url": "./?utm_source=homescreen",
   "scope": "./",
   "display": "standalone",

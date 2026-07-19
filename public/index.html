@@ -4,15 +4,15 @@
 <meta charset="UTF-8">
 <!-- M2: 放开 user-scalable（可访问性），加 viewport-fit=cover 让 safe-area 生效 -->
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>PK · 德扑计分</title>
+<title>德扑积分器</title>
 
 <!-- M1: PWA / 移动端 meta -->
 <meta name="theme-color" content="#080b0a">
-<meta name="description" content="实时德州扑克计分器，专注牌局，筹码交给我们。">
+<meta name="description" content="线下德州扑克记分小工具">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="德扑计分">
+<meta name="apple-mobile-web-app-title" content="德扑积分器">
 <meta name="format-detection" content="telephone=no">
 
 <link rel="manifest" href="./manifest.webmanifest">
@@ -20,7 +20,7 @@
 <link rel="apple-touch-icon" href="./apple-touch-icon.png">
 <link rel="preload" href="./assets/hero-d943dda7.jpg" as="image" type="image/jpeg" fetchpriority="high">
 
-<link rel="stylesheet" href="./styles.css?v=8">
+<link rel="stylesheet" href="./styles.css?v=9">
 </head>
 <body>
 
@@ -29,10 +29,9 @@
     <div class="home-shell">
       <div class="hero-art">
         <img src="./assets/hero-d943dda7.jpg" alt="" width="900" height="900" fetchpriority="high">
-        <div class="brand-mark">PK</div>
+        <div class="brand-mark">积分</div>
       </div>
-      <h1>今晚，<span>算清楚</span></h1>
-      <p class="home-kicker">专注牌局，筹码交给我们。</p>
+      <h1>德扑积分器</h1>
       <div class="home-actions">
         <button class="btn btn-primary" onclick="createRoom()">创建新牌局</button>
         <div class="home-divider">或加入朋友</div>
@@ -170,6 +169,6 @@
 
 <div class="toast" id="toast"></div>
 
-<script type="module" src="./scripts/app.js?v=8"></script>
+<script type="module" src="./scripts/app.js?v=9"></script>
 </body>
 </html>

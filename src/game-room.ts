@@ -29,6 +29,9 @@ export class GameRoom extends DurableObject<Env> {
       this.game.sidePots = [];
       this.game.players.forEach(player => {
         player.isConnected = false;
+        // 从存储恢复时连接一律视为已断：旧数据无 disconnectedAt 则用房间恢复时刻兜底，
+        // 让前端「已离线 N 分钟」有合理近似，不至于显示 NaN。
+        if (!player.disconnectedAt) player.disconnectedAt = Date.now();
       });
 
       for (const ws of this.ctx.getWebSockets()) {
@@ -219,6 +222,10 @@ export class GameRoom extends DurableObject<Env> {
         case 'removePlayer':
           await this.handleRemovePlayer(ws, msg.targetPlayerId || msg.playerId);
           break;
+        case 'sync':
+          // 客户端从后台切回前台时请求重推最新状态（不改变 game）。
+          this.broadcast(this.playerIdFor(ws));
+          return;
         case 'ping':
           ws.send(JSON.stringify({ type: 'pong' }));
           return;
@@ -278,6 +285,7 @@ export class GameRoom extends DurableObject<Env> {
 
     if (player) {
       player.isConnected = true;
+      player.disconnectedAt = undefined;
       // 手牌进行中重连：保持挂机(isSittingOut)，本手牌仍纯跳过，等下一手发牌才复活。
       // 仅在等待区(waiting)重连才立即清除挂机。
       if (this.game.round === 'waiting') {
@@ -342,6 +350,7 @@ export class GameRoom extends DurableObject<Env> {
 
   private markDisconnected(player: Player): void {
     player.isConnected = false;
+    player.disconnectedAt = Date.now();
     if (this.game.round === 'waiting') return;
 
     // 手牌进行中断线：改为「坐出挂机」——保持座位、盲注位次与底池权益不变，

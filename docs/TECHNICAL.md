@@ -1,10 +1,8 @@
 # poker-scorer 技术文档
 
-> 实时德州扑克计分器 — 完整架构与实现细节
->
-> **目标读者**：AI Agent、代码工程师。本文档涵盖架构、协议、关键逻辑、不变量与已知问题。
->
-> 最后更新：2026-06-29
+> 德扑积分器 — 完整架构与实现参考  
+> 配套入口：[README.md](../README.md) · 风险与改进：[RISKS_AND_IMPROVEMENTS.md](./RISKS_AND_IMPROVEMENTS.md)  
+> 以仓库当前代码为准；改核心逻辑后请同步更新本文。
 
 ---
 
@@ -12,789 +10,557 @@
 
 1. [概览](#1-概览)
 2. [架构](#2-架构)
-3. [目录结构](#3-目录结构)
-4. [后端详解](#4-后端详解)
-   - [4.1 入口路由 (index.ts)](#41-入口路由-indexts)
-   - [4.2 类型与常量 (types.ts)](#42-类型与常量-typests)
-   - [4.3 游戏房间 DO (game-room.ts)](#43-游戏房间-do-game-roomts)
-   - [4.4 房间注册表 DO (room-registry.ts)](#44-房间注册表-do-room-registryts)
-   - [4.5 环境绑定 (env.ts)](#45-环境绑定-envts)
-5. [前端详解](#5-前端详解)
-   - [5.1 HTML 结构](#51-html-结构)
-   - [5.2 CSS 设计系统](#52-css-设计系统)
-   - [5.3 JS 模块职责划分](#53-js-模块职责划分)
-   - [5.4 WebSocket 协议](#54-websocket-协议)
-   - [5.5 前后端同源逻辑](#55-前后端同源逻辑)
-6. [扑克规则不变量](#6-扑克规则不变量)
-   - [6.1 行动顺序](#61-行动顺序)
-   - [6.2 断线坐出 (Sitting Out)](#62-断线坐出-sitting-out)
-7. [关键流程](#7-关键流程)
-   - [7.1 房间创建](#71-房间创建)
-   - [7.2 玩家加入与重连](#72-玩家加入与重连)
-   - [7.3 一手牌的完整生命周期](#73-一手牌的完整生命周期)
-   - [7.4 每日重置](#74-每日重置)
-   - [7.5 房间过期](#75-房间过期)
-8. [测试](#8-测试)
-9. [部署与运维](#9-部署与运维)
-10. [已知问题与设计决策](#10-已知问题与设计决策)
+3. [目录与文件职责](#3-目录与文件职责)
+4. [后端](#4-后端)
+5. [前端](#5-前端)
+6. [WebSocket 协议](#6-websocket-协议)
+7. [扑克规则不变量](#7-扑克规则不变量)
+8. [关键流程](#8-关键流程)
+9. [前后端同源逻辑](#9-前后端同源逻辑)
+10. [测试](#10-测试)
+11. [部署与运维](#11-部署与运维)
+12. [设计决策与已知局限](#12-设计决策与已知局限)
+13. [修改安全地图](#13-修改安全地图)
 
 ---
 
 ## 1. 概览
 
-**poker-scorer** 是一个实时德州扑克**计分器**（不发牌、不洗牌，只记筹码/盲注/行动轮转）。物理牌桌上的人打牌，本应用负责记录每手牌的筹码流动、盲注轮转和行动顺序。
+**poker-scorer** 是部署在 Cloudflare Workers 上的实时德州扑克**计分器**：
+
+- 不发牌、不洗牌、不计算牌力。
+- 记录：筹码、盲注、行动轮转、底池、主池/边池结算。
+- 胜负由物理牌桌上的人在摊牌 UI 里按牌力排名选出。
 
 | 属性 | 值 |
 |------|-----|
 | 运行时 | Cloudflare Workers Free Tier |
-| 存储 | Durable Object SQLite Storage（每房间一个 DO） |
-| 通信 | WebSocket（Hibernation API） |
-| 前端 | 零构建 ES Module + 原生 CSS，PWA |
-| 语言 | TypeScript（后端）/ JavaScript ES Module（前端） |
-| 测试 | Vitest + @cloudflare/vitest-pool-workers |
-| 部署 | `wrangler deploy`（无 CI/CD） |
+| 状态存储 | 每房间一个 SQLite-backed Durable Object `GameRoom` |
+| 房号目录 | Durable Object `RoomRegistry` |
+| 实时通道 | WebSocket + Hibernation API |
+| 前端 | 零构建 ES Module + CSS，PWA |
+| 语言 | 后端 TypeScript / 前端原生 JS |
+| 测试 | Vitest + `@cloudflare/vitest-pool-workers` |
+| 部署 | `wrangler deploy`，无 CI/CD |
 
-**容量限制（Free Tier）**：
-- 每个 DO 最多 1000 个 WebSocket 连接（实际每房 ≤12 玩家）
-- SQLite 存储有限（游戏状态 JSON < 10KB/房）
-- 每天 100,000 请求限额
-- 单房串行化（DO 保证同一房间内的操作顺序执行）
+**容量直觉（以平台当前 Free Tier 为准，部署前查官方文档）**
+
+- 每房玩家上限 12；每 DO WebSocket 连接上限远高于此。
+- 单房状态 JSON 通常 < 10KB。
+- 房间内操作由 DO 串行，无跨请求竞态；房间之间横向扩展。
 
 ---
 
 ## 2. 架构
 
 ```
-┌─────────────────────────────────────────────────┐
-│                  Cloudflare Workers              │
-│                                                  │
-│  ┌──────────────┐    ┌───────────────────────┐  │
-│  │  index.ts    │───▶│  ASSETS (Static Files) │  │
-│  │  (Router)    │    └───────────────────────┘  │
-│  │              │                                │
-│  │  POST /api/  │    ┌───────────────────────┐  │
-│  │  rooms ──────┼───▶│  RoomRegistry DO     │  │
-│  │              │    │  (房号唯一性)          │  │
-│  │  /api/rooms/ │    └───────────────────────┘  │
-│  │  :id/* ──────┼───┐                            │
-│  │              │   │  ┌───────────────────────┐ │
-│  │  /ws/:id ────┼───┼─▶│  GameRoom DO         │ │
-│  └──────────────┘   │  │  (每房间一个实例)      │ │
-│                      │  │  - SQLite 存储状态    │ │
-│                      │  │  - WebSocket 管理     │ │
-│                      │  │  - 全部游戏逻辑      │ │
-│                      │  └───────────────────────┘ │
-│                      │                            │
-│                      │  房间间完全独立，横向扩展   │
-│                      └────────────────────────────│
-└─────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                   Cloudflare Worker                       │
+│                                                          │
+│  src/index.ts  (路由)                                     │
+│    │                                                     │
+│    ├─ POST /api/rooms ─────────► RoomRegistry.claim()    │
+│    │                              + GameRoom /init       │
+│    │                                                     │
+│    ├─ /api/rooms/:id/* ────────► GameRoom DO             │
+│    ├─ /ws/:id ─────────────────► GameRoom DO (WS upgrade)│
+│    │                                                     │
+│    └─ 其他 GET ────────────────► ASSETS (public/)        │
+│                                                          │
+│  GameRoom（每房间一个实例）                                 │
+│    · SQLite storage 持久化 GameState                      │
+│    · Hibernation WebSocket，attachment 存 playerId       │
+│    · 全部游戏逻辑串行执行                                   │
+│    · alarm：北京 04:00 清理 或 7 天 TTL 销毁               │
+└──────────────────────────────────────────────────────────┘
 ```
 
-**核心设计原则**：
-1. **瘦客户端**：前端不做游戏逻辑判决，只渲染后端传来的 `currentPlayerIndex` 和 `PublicGameState`
-2. **单房间串行**：GameRoom DO 保证同一房间内所有操作顺序执行，天然无竞态
-3. **WebSocket Hibernation**：DO 在无消息时休眠以节省成本；通过 `serializeAttachment` 在 WebSocket 上存储 `playerId` 来保持连接间的玩家身份
+### 设计原则
+
+1. **瘦客户端**：前端不判行动权，只渲染 `currentPlayerIndex` 与 `PublicGameState`。
+2. **单房串行**：`GameRoom` DO 保证同一房间操作顺序执行。
+3. **Hibernation**：无消息时可休眠；`serializeAttachment({ playerId })` 在唤醒后恢复身份映射。
+4. **全量状态同步**：每次变更 `broadcast` 完整公开状态（体积小、实现简单）。
+5. **无账号体系**：`deviceId`（localStorage UUID）+ `playerId` 做设备级身份恢复。
 
 ---
 
-## 3. 目录结构
+## 3. 目录与文件职责
 
 ```
 poker-scorer/
-├── src/                          # 后端 TypeScript（Cloudflare Worker）
-│   ├── index.ts                  # Worker 入口 & HTTP 路由
-│   ├── game-room.ts              # GameRoom Durable Object（核心游戏逻辑，~833行）
-│   ├── room-registry.ts          # RoomRegistry Durable Object（房号注册，~25行）
-│   ├── types.ts                  # 类型定义、常量、工具函数（~134行）
-│   └── env.ts                    # Cloudflare 环境绑定类型
-│
-├── public/                       # 前端静态资源（零构建）
-│   ├── index.html                # 单页面 HTML（3个视图）
-│   ├── styles.css                # 全局样式（CSS 变量 + 响应式）
-│   ├── sw.js                     # Service Worker（PWA 离线缓存）
-│   ├── manifest.webmanifest      # PWA 清单
+├── src/
+│   ├── index.ts           # Worker 入口与路由（~100 行）
+│   ├── game-room.ts       # 核心：游戏 + WS + 结算 + 生命周期（~1110 行）
+│   ├── room-registry.ts   # 房号 CAS 注册（~25 行）
+│   ├── types.ts           # 类型、常量、generateRoomCode / getRoundName
+│   └── env.ts             # Env extends Cloudflare.Env（绑定由 wrangler 生成）
+├── public/
+│   ├── index.html         # 三视图 + 三模态框
+│   ├── styles.css         # 设计系统
+│   ├── sw.js              # 壳缓存 PWA
+│   ├── manifest.webmanifest
 │   ├── scripts/
-│   │   ├── app.js                # 应用入口，模块粘合，全局事件绑定
-│   │   ├── socket.js             # WebSocket 生命周期管理（单例）
-│   │   ├── render.js             # 纯渲染层（含与后端同源的局部逻辑）
-│   │   ├── actions.js            # 玩家操作（fold/check/call/raise）
-│   │   ├── ui.js                 # DOM 工具、toast、模态框、键盘适配
-│   │   ├── storage.js            # localStorage 持久化（deviceId、玩家身份）
-│   │   └── feedback.js           # 轮到你了通知（标题闪动、震动）
-│   ├── assets/                   # 静态图片（hero、avatar、winner）
-│   └── *.png                     # PWA 图标（gen-icons.mjs 生成）
-│
-├── test/
-│   └── game-room.test.ts         # Vitest 测试（~708行，22 个用例）
-│
-├── scripts/
-│   └── gen-icons.mjs             # PWA 图标生成脚本（依赖 sharp）
-│
-├── docs/                            # 项目文档
-│   └── TECHNICAL.md                  #   本技术文档（唯一权威技术参考）
-│
-├── wrangler.toml                 # Cloudflare 部署配置
-├── package.json                  # 依赖：hono + vitest + wrangler
-├── tsconfig.json                 # TypeScript 配置（ES2022, strict）
-├── tsconfig.test.json            # 测试专用 TS 配置
-├── vitest.config.mts             # Vitest 配置（Cloudflare workers pool）
-├── worker-configuration.d.ts     # 自动生成的 Worker 绑定类型（.gitignore 忽略）
-└── README.md                     # 项目说明
+│   │   ├── app.js         # 入口：粘合模块、事件委托、庆祝弹窗
+│   │   ├── socket.js      # WS 生命周期 / 心跳 / 重连 / sync
+│   │   ├── render.js      # 纯渲染 + 摊牌分档 UI + 同源 isRoundComplete
+│   │   ├── actions.js     # 发操作消息、弃牌二次确认、加注、补码
+│   │   ├── ui.js          # DOM、toast、modal、深链、键盘适配
+│   │   ├── storage.js     # deviceId / 房间玩家身份
+│   │   └── feedback.js    # 轮到你：标题 + 横幅 + 震动
+│   └── assets/、图标 png
+├── test/game-room.test.ts
+├── scripts/gen-icons.mjs  # PWA 图标生成（可选，依赖 sharp）
+├── wrangler.toml
+├── package.json
+├── vitest.config.mts
+└── docs/TECHNICAL.md      # 本文件
 ```
+
+### 修改热力图
+
+| 文件 | 频率 / 风险 |
+|------|-------------|
+| `src/game-room.ts` | 最高：任何规则改动都在这里 |
+| `src/types.ts` | 协议字段变更时改 |
+| `public/scripts/render.js` | 中：含同源谓词，改后端必同步 |
+| `public/scripts/actions.js` / `app.js` | UI 操作流 |
+| `public/scripts/socket.js` | 连接策略 |
+| `test/game-room.test.ts` | 跟随 game-room |
 
 ---
 
-## 4. 后端详解
+## 4. 后端
 
-### 4.1 入口路由 (index.ts)
+### 4.1 路由 `src/index.ts`
 
-**文件**：`src/index.ts`（102 行）
+处理顺序：
 
-**职责**：HTTP 请求路由分发。
+| 匹配 | 行为 |
+|------|------|
+| `POST /api/rooms` | 最多 8 次 `generateRoomCode` + `RoomRegistry.claim` → `GameRoom /init` → 返回 `{ roomId, smallBlind, bigBlind }`；失败回滚 registry |
+| `/api/rooms/:id/*` | 房号须匹配 `^[A-Z2-9]{6}$`（无 0/1）→ `roomExists` → 转 DO |
+| `/ws/:id` | 同上，转 DO 做 WebSocket 升级 |
+| 其他 | `env.ASSETS.fetch` 静态资源 |
 
-**处理顺序**（按优先级）：
+`roomExists`：先查 `RoomRegistry`；未注册则兼容旧房：读 `GameRoom /exists`，用 `createdAt + ROOM_TTL_MS` 判断，有效则补写 registry。
 
-| 匹配条件 | 方法 | 处理方式 |
-|----------|------|----------|
-| `POST /api/rooms` | POST | 创建新房间：生成房号 → 注册到 RoomRegistry → 初始化 GameRoom |
-| `/api/rooms/:roomId/*` | 任意 | 检查房间存在 → 转发给对应 GameRoom DO |
-| `/ws/:roomId` | 任意 | 检查房间存在 → WebSocket 升级到 GameRoom DO |
-| 其他 | GET | `env.ASSETS.fetch(request)` 回退到静态文件 |
+非法房号（含 0/1）不进正则 → 落到 ASSETS → 常见 1101，**不是服务端逻辑故障**。
 
-**关键细节**：
+### 4.2 类型 `src/types.ts`
 
-- **房号正则**：`/^\/api\/rooms\/([A-Z2-9]{6})/` —— **排除 0 和 1**（避免与字母 O/I 混淆）。房号来自 `generateRoomCode()` 使用的字符集 `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`
-- **创建房间**：最多尝试 8 次生成不重复房号（`RoomRegistry.claim()` 原子操作），失败返回 503
-- **房间存在检查** (`roomExists`)：先查 RoomRegistry；若未注册（兼容升级前的旧房间）则回退查 GameRoom 的 `/exists` 端点
-- **非法房号**（含 0/1）：不匹配正则，落到 `env.ASSETS.fetch()` → 返回 1101 错误（Static Assets 找不到该文件）
+#### Player
 
-**房间过期守卫**：`roomExists()` 同时检查 `expiresAt`，过期房间返回 404
+| 字段 | 含义 |
+|------|------|
+| `id` | UUID，服务端创建新玩家时生成 |
+| `name` | 昵称 |
+| `chips` | 当前筹码 |
+| `position` | 相对庄：0=D, 1=SB, 2=BB, 3=UTG… |
+| `isFolded` | 本手已弃牌 |
+| `isActive` | 本手是否参与（开局时：在线且 chips>0 的快照） |
+| `isAllIn` | 已全下 |
+| `isSittingOut` | 断线坐出挂机（见 §7.2） |
+| `currentBet` / `totalBet` | 本轮注 / 本手总投入（边池分层用 totalBet） |
+| `hasActedThisRound` | 本轮是否已行动 |
+| `isConnected` | WebSocket 是否在线 |
+| `disconnectedAt?` | 断线时间戳，供前端显示离线时长 |
 
-### 4.2 类型与常量 (types.ts)
+#### Round
 
-**文件**：`src/types.ts`（134 行）
+`waiting | preflop | flop | turn | river | showdown`
 
-#### Player 接口
+#### GameState（仅服务端完整存储）
 
-```typescript
-interface Player {
-  id: string;              // UUID，客户端生成
-  name: string;            // 玩家昵称
-  chips: number;           // 当前筹码
-  position: number;        // 相对庄位: 0=Dealer, 1=SB, 2=BB, 3=UTG...
-  isFolded: boolean;       // 已弃牌
-  isActive: boolean;       // 本手牌是否参与（在线+有筹码）
-  isAllIn: boolean;        // 已全下
-  isSittingOut: boolean;   // 断线坐出（保留座位但跳过行动）⚠️ 核心不变量见 §6.2
-  currentBet: number;      // 当前轮下注额
-  totalBet: number;        // 整手牌总下注额
-  hasActedThisRound: boolean; // 本轮是否已行动
-  isConnected: boolean;    // WebSocket 是否在线
-}
-```
+在公开字段之外还有：
 
-#### Round 类型
-
-```typescript
-type Round = 'waiting' | 'preflop' | 'flop' | 'turn' | 'river' | 'showdown';
-```
-
-`waiting` = 牌局间等待状态；`showdown` = 摊牌选胜者。
-
-#### 消息协议
-
-```typescript
-// 客户端 → 服务端
-interface ClientMessage {
-  type: 'join' | 'leave' | 'action' | 'startHand' | 'nextRound' | 'endHand' | 'updateSettings' | 'ping';
-  name?: string;
-  playerId?: string;       // 重连用
-  deviceId?: string;       // 设备标识，用于跨标签页身份恢复
-  action?: Action;         // fold | check | call | raise
-  amount?: number;         // 加注金额
-  winnerIds?: string[];    // 摊牌选胜者
-  settings?: { smallBlind?: number; bigBlind?: number };
-}
-
-// 服务端 → 客户端
-interface ServerMessage {
-  type: 'state' | 'error' | 'pong';
-  state?: PublicGameState;
-  message?: string;
-}
-```
-
-#### PublicGameState vs GameState
-
-- `GameState`：服务端完整状态，包含 `playerDevices: Record<string, string>`（deviceId 映射，**不发送给客户端**）
-- `PublicGameState`：广播给客户端的状态，**不包含** `playerDevices`。额外包含 `yourPlayerId` 字段（每个连接收到的值不同）
+- `playerDevices: Record<playerId, deviceId>` — **不下发客户端**
+- `expiresAt` / `createdAt`
+- `sidePots?` — 最近一次结算明细，结算后短暂存在，下一手清空
+- `lastWinnerIds` — 庆祝弹窗用
 
 #### 常量
 
-| 常量 | 值 | 说明 |
-|------|-----|------|
-| `DEFAULT_CHIPS` | 1000 | 初始筹码 |
-| `DEFAULT_SMALL_BLIND` | 10 | 默认小盲 |
-| `DEFAULT_BIG_BLIND` | 20 | 默认大盲 |
-| `ROOM_TTL_MS` | 604,800,000（7 天） | 房间过期时间 |
+| 常量 | 值 |
+|------|-----|
+| `DEFAULT_CHIPS` | 1000 |
+| `DEFAULT_SMALL_BLIND` | 10 |
+| `DEFAULT_BIG_BLIND` | 20 |
+| `ROOM_TTL_MS` | 7 天 |
 
-#### 工具函数
+房号：`ABCDEFGHJKLMNPQRSTUVWXYZ23456789` 共 32 字符，长度 6。
 
-- `generateRoomCode()`：`crypto.getRandomValues` 生成 6 位房号（32 字符集）
-- `getRoundName(round)`：返回中文轮次名称
+### 4.3 RoomRegistry `src/room-registry.ts`
 
-### 4.3 游戏房间 DO (game-room.ts)
+轻量 DO，SQLite 一条 `room: { expiresAt }`：
 
-**文件**：`src/game-room.ts`（833 行，最核心文件）
+- `claim(expiresAt)`：已存在 → false；否则写入 → true（CAS）
+- `exists()`：存在且未过期
+- `remove()`：`deleteAll`
+
+### 4.4 GameRoom `src/game-room.ts`
 
 #### 初始化
 
-```
-constructor()
-  └─ ctx.blockConcurrencyWhile(async () => {
-       从 SQLite 恢复 game 状态
-       重建 connections Map（从 Hibernation attachment）
-       恢复玩家的 isConnected 状态
-       执行 checkDailyReset()
-       确保 alarm 已设置
-     })
-```
+`constructor` 内 `blockConcurrencyWhile`：
 
-`blockConcurrencyWhile` 保证：在所有存储读取完成前，不处理任何请求。
+1. 读 `storage.get('game')`
+2. 玩家 `isConnected=false`，无 `disconnectedAt` 则兜底为 `Date.now()`
+3. `getWebSockets()` + attachment 恢复仍活着的连接
+4. 若无 alarm 且有 game → `setAlarm(nextCleanupOrExpiry())`
 
-#### 方法全景图
+#### HTTP `fetch`
 
-```
-HTTP 入口
-├── fetch()              # 路由 /exists, /state, /init, WebSocket upgrade
-│
-WebSocket 生命周期
-├── webSocketMessage()   # 消息分发（根据 ClientMessage.type）
-├── webSocketClose()     # 断线处理 → markDisconnected()
-├── webSocketError()     # 错误日志
-│
-玩家管理
-├── handleJoin()         # 加入/重连（4种身份恢复路径）
-├── handleLeave()        # 离开 → markDisconnected()
-├── markDisconnected()   # 标记断线坐出（核心逻辑）
-│
-游戏操作
-├── handleAction()       # fold/check/call/raise
-├── handleStartHand()    # 开新一手牌
-├── handleNextRound()    # 进入下一轮（preflop→flop→turn→river→showdown）
-├── handleEndHand()      # 摊牌结束，分配底池
-├── handleSettings()     # 修改盲注（仅 waiting 状态）
-│
-游戏逻辑辅助
-├── postBlinds()         # 发盲注（含 SB≠BB 防御）
-├── setFirstToAct()      # 确定本轮首动者 ⚠️ 核心不变量见 §6.1
-├── advanceTurn()        # 移动到下一位可行动玩家
-├── isRoundComplete()    # 判断本轮下注是否完成
-├── nextActiveIndex()    # 找下一个活跃玩家
-├── nextDifferentActiveIndex() # 找下一个活跃且 ≠exclude 的玩家（盲注防御用）
-├── assignPositions()    # 按庄位分配 position 编号
-├── awardPot()           # 分配底池给胜者
-├── resetActedFlags()    # 加注后重置其他玩家的 hasActedThisRound
-│
-广播与通信
-├── broadcast()          # 向所有连接发送 state 消息（每个连接收到自己的 yourPlayerId）
-├── sendError()          # 单连接错误
-├── sendToAll()          # 全员错误（以 error 类型发送）
-├── playerIdFor()        # 从 connections Map 或 socket attachment 获取 playerId
-│
-生命周期
-├── alarm()              # 房间过期清理
-├── checkDailyReset()    # 北京时间凌晨 4 点重置
-├── save()               # 持久化到 SQLite
-├── loadOrCreate()       # 延迟初始化或创建新状态
-```
-
-#### handleJoin 重连收敛（4 种身份恢复路径）
-
-```
-                    ┌─ 有 existingPlayerId ─▶ 查 playerDevices 映射匹配 ─▶ 找到 player
-                    │
-ClientMessage ──────┼─ 无 playerId 但有 deviceId ─▶ 查 playerDevices 反向匹配 ─▶ 找到 player
-  { name,           │
-    playerId?,      ├─ 仍没找到 + round==='waiting' ─▶ 按 name + !isConnected 匹配
-    deviceId? }     │
-                    └─ 全部未匹配 + round==='waiting' + 人数<12 ─▶ 创建新玩家
-```
-
-**关键点**：
-1. 重连时**先注册新连接再关闭旧连接**——保证 `webSocketClose` 回调中 `hasAnotherConnection=true`，不会误判离线
-2. 手牌进行中重连：保持 `isSittingOut=true`，本手牌仍跳过，等下一手牌 `startHand` 才复活
-3. waiting 状态重连：立即清除 `isSittingOut`，恢复 `isActive`
-
-#### handleAction 操作处理
-
-```
-fold:  isFolded = true
-check: 仅当 toCall === 0（无需跟注）
-call:  仅当 toCall > 0，跟注 = min(toCall, chips)
-raise: 加注额 = toCall + raiseAmount
-       - 若 totalNeeded >= chips → All-in
-       - 若 totalNeeded < chips → 正常加注（最小加注额 ≥ bigBlind）
-       - 加注后：currentBet 更新 + resetActedFlags(raiserIndex)
-```
-
-**操作后**：检查剩余竞争者数量 → 仅剩 1 人则直接进入 showdown 并 awardPot。否则 advanceTurn → 检查 isRoundComplete。
-
-#### isRoundComplete 逻辑
-
-```typescript
-// 可行动者 = 未弃牌 + 活跃 + 未All-in + 未坐出
-const actionable = players.filter(
-  p => !p.isFolded && p.isActive && !p.isAllIn && !p.isSittingOut
-);
-// 所有人都已行动 且 所有人的 currentBet 都等于全局 currentBet
-return actionable.every(p => p.hasActedThisRound && p.currentBet === this.game.currentBet);
-```
-
-**⚠️ 此逻辑在 `render.js` 中有副本，修改时必须同步。**
-
-#### advanceTurn 逻辑
-
-```typescript
-// 从 currentPlayerIndex 开始循环，找第一个满足条件者：
-// !isFolded && isActive && !isAllIn && !isSittingOut
-// 找不到则设 -1（无人可行动）
-```
-
-**⚠️ 此谓词在 `render.js` 中也有副本。**
-
-### 4.4 房间注册表 DO (room-registry.ts)
-
-**文件**：`src/room-registry.ts`（25 行）
-
-轻量 DO，仅用于房号唯一性：
-
-```typescript
-class RoomRegistry extends DurableObject {
-  async claim(expiresAt: number): Promise<boolean>  // CAS 式注册，返回是否成功
-  async exists(): Promise<boolean>                    // 检查是否已注册
-  async remove(): Promise<void>                       // 删除注册
-}
-```
-
-使用 SQLite 存储（`new_sqlite_classes`），`claim()` 内部逻辑：若已存在 → 返回 false；若不存在 → 写入 + 设置过期 alarm → 返回 true。
-
-### 4.5 环境绑定 (env.ts)
-
-```typescript
-interface Env extends Cloudflare.Env {
-  GAME_ROOM: DurableObjectNamespace<import('./game-room').GameRoom>;
-  ROOM_REGISTRY: DurableObjectNamespace<import('./room-registry').RoomRegistry>;
-  ASSETS: Fetcher;  // Workers Static Assets
-}
-```
-
----
-
-## 5. 前端详解
-
-### 5.1 HTML 结构
-
-**文件**：`public/index.html`（单页面应用，三个视图 + 三个模态框）
-
-```
-view-home      # 首页：hero 图片 + 创建/加入房间
-view-lobby     # 大厅：玩家列表 + 排行榜 + 开始按钮
-view-game      # 牌局：顶栏 + 底池 + 公共牌 + 玩家卡片 + 行动栏
-
-模态框（独立于视图，可叠加）：
-#modal-name       # 输入昵称（加入/创建房间前）
-#modal-share      # 分享房间码
-#modal-winner     # 获胜者庆祝弹窗
-```
-
-**PWA 支持**：
-- `manifest.webmanifest`：应用名 "PK · 德扑计分"
-- `theme-color`：`#080b0a`
-- viewport：`viewport-fit=cover`（iPhone 刘海屏适配）
-- `apple-mobile-web-app-capable`：全屏模式
-
-**事件绑定**：所有 `onclick` 通过 `window` 全局函数绑定（由 `app.js` 暴露）。
-
-### 5.2 CSS 设计系统
-
-**文件**：`public/styles.css`（~270 行）
-
-**CSS 变量**（深色主题）：
-
-```css
---bg: #080b0a           /* 近黑背景 */
---surface: #161a19       /* 卡片/面板 */
---accent: #d97757        /* 暖珊瑚色强调 */
---accent-dim: #a85d3f
---text-primary: #f0ede8  /* 暖白文字 */
---text-secondary: #9c9a95
---border: #2a2d2c
---danger: #dc5b4e
---success: #5b9d6b
---warning: #d4a44c
---table-green: #1a4a2e   /* 牌桌绿（行动按钮） */
-```
-
-**响应式断点**：
-- `380px`：小屏手机
-- `720px`：平板/桌面（最大宽度 480px 居中）
-- `orientation: landscape`：横屏适配（减小间距）
-
-**关键样式**：
-- `.action-bar`：底部固定，flex 布局，响应 `.visible` 类控制显示
-- `.player-card`：7 种视觉状态（active 绿色边框, folded 灰色透明度, sitting-out 黄色虚线, all-in 橙色, disconnected 红色, current-turn 发光动画, selected-winner 选中态）
-- `.keyboard-open`：iOS 键盘弹出时 body class，用于固定定位修正
-- `safe-area-inset-*`：iPhone 刘海/Home Indicator 安全区适配
-
-### 5.3 JS 模块职责划分
-
-7 个 ES Module（零构建，浏览器原生 import），无共享全局状态，通过函数参数/返回值通信：
-
-#### app.js（284 行）— 应用入口
-
-```
-职责：模块粘合、状态路由、全局事件绑定
-```
-
-- **入口函数** `init()`：注册 SW → 绑定 onclick → 连接 socket 回调 → 处理 deep link
-- **状态机**：`onState(state)` 根据 `round` 切换视图（waiting → lobby，其他 → game）
-- **全局函数**（暴露到 `window`）：`createRoom`, `joinRoom`, `leaveTable`, `copyCurrentRoomCode`, `shareCurrentRoom`, `closeTopModal`, 游戏操作函数
-- **事件委托**：`#action-bar` 上的 click 事件统一处理，根据 `data-action` 分发
-- **键盘**：ESC 关闭顶层模态框
-- **胜者庆祝**：`sessionStorage` 按 `handNumber` 去重，防止重复弹窗
-
-#### socket.js（230 行）— WebSocket 管理器
-
-```
-职责：连接生命周期、心跳、自动重连
-```
-
-- **单例模式**：模块级 `let ws`, `let url`, `let playerId`
-- **心跳**：`PING_INTERVAL = 60s`（发 ping），`PONG_TIMEOUT = 240s`（等 pong，~5min 窗口防后台误杀）
-- **重连**：指数退避 2s→4s→8s…max 30s，`visiblitychange` 切回前台时立即尝试
-- **订阅者模式**：`onConn`（Set）和 `onMessage`（Set）通知所有订阅者
-- **身份持久化**：`playerId` 存 localStorage（由 `storage.js` 辅助）
-
-#### render.js（220 行）— 渲染层
-
-```
-职责：纯渲染，读 PublicGameState → 更新 DOM（无状态变更）
-```
-
-- **三个渲染函数**：`renderLobby(state)`, `renderGame(state)`, `renderActionBar(state)`
-- **Lobby**：玩家列表 + 排行榜（按筹码降序）+ 盲注设置
-- **Game**：轮次标签（`getRoundName` 副本）+ 公共牌区 + 底池动画 + 玩家卡片
-- **玩家卡片状态**：7 种视觉状态见 CSS 一节，位置标签 D/SB/BB/ALL
-- **底池动画**：`requestAnimationFrame` + easeOutCubic，从旧值计数到新值
-- **行动栏**：3 种模式 —— 轮到我（fold/check/call/raise）、本轮完成（进入下一轮按钮）、摊牌（选择胜者）
-- ⚠️ **含与后端同源的逻辑**：`isRoundComplete()` 和 "可行动/候选获胜者" 过滤谓词（`!isSittingOut && !isAllIn`）
-
-#### actions.js（105 行）— 玩家操作
-
-```
-职责：发送操作消息 + 客户端校验
-```
-
-- `sendAction(action, amount?)`：发送操作 → 震动反馈（`navigator.vibrate(15)`）
-- **Fold 双击确认**：第一次点击 fold → 按钮变红 + "再点确认" + 2 秒超时后复原
-- **Raise 控制**：步长 = `bigBlind`，最大值 = 玩家筹码，默认值 = min(toCall + bigBlind, chips)
-- `startHand`, `nextRound`, `confirmWinners`（发送 `endHand`），`updateSettings`
-
-#### ui.js（106 行）— DOM 工具
-
-```
-职责：DOM 快捷操作、toast、模态框、键盘适配
-```
-
-- `$(sel)`, `$$(sel)`：`querySelector` / `querySelectorAll` 别名
-- `toast(message)`：居中叠加 toast，1.5s + 消息长度补偿自动消失
-- `showView(id)`, `showModal(id)`, `closeModal(id)`, `closeTopModal()`
-- `esc(text)`：HTML 转义
-- `renderConnDot(connected)`：连接状态指示点（绿色/红色脉冲）
-- `applyDeepLink()`：从 `?room=` URL 参数预填房间码
-- `installKeyboardAdapter()`：iOS Visual Viewport API 处理键盘弹起
-
-#### feedback.js（52 行）— 回合通知
-
-```
-职责：轮到你了的感官反馈
-```
-
-- **标题**：`document.title = '● 轮到你'`（后台标签页可见）
-- **震动**：`[40, 60, 40]` 模式
-- **音效**：已移除。Web Audio API 创建 AudioContext 后即使不播放，macOS/iOS 也会将页面识别为"媒体播放中"而抢占 AirPods
-
-#### storage.js（33 行）— 本地持久化
-
-```
-职责：localStorage 读写
-```
-
-- `deviceId()`：生成/读取设备 UUID（用于跨标签页身份恢复）
-- `getSavedPlayer(roomId)`：按房间读取玩家身份（含旧版 fallback 逻辑）
-- `savePlayer(roomId, playerId, name)`：存储玩家身份
-
-### 5.4 WebSocket 协议
-
-#### 连接流程
-
-```
-客户端                               服务端
-  │                                    │
-  │──── ws://host/ws/ROOMID ──────────▶│  (HTTP Upgrade)
-  │                                    │  acceptWebSocket + serializeAttachment({playerId:undefined})
-  │◀─── 101 Switching Protocols ──────│
-  │                                    │
-  │──── {type:"join", name, playerId?, deviceId?} ──▶│
-  │                                    │  handleJoin → broadcast(state)
-  │◀─── {type:"state", state:{..., yourPlayerId}} ──│
-  │                                    │
-  │──── {type:"ping"} ────────────────▶│
-  │◀─── {type:"pong"} ────────────────│
-```
-
-#### 消息类型汇总
-
-| type | 方向 | 说明 |
-|------|------|------|
-| `join` | C→S | 加入房间（含 name, playerId?, deviceId?） |
-| `leave` | C→S | 离开房间 |
-| `action` | C→S | 操作（含 action: fold/check/call/raise, amount?） |
-| `startHand` | C→S | 开始新一手牌 |
-| `nextRound` | C→S | 进入下一轮 |
-| `endHand` | C→S | 结束手牌，选胜者（含 winnerIds[]） |
-| `updateSettings` | C→S | 修改盲注（含 settings: {smallBlind?, bigBlind?}） |
-| `ping` | C→S | 心跳 |
-| `state` | S→C | 状态同步（含 state: PublicGameState + yourPlayerId） |
-| `error` | S→C | 错误消息（含 message: string） |
-| `pong` | S→C | 心跳回复 |
-
-#### 状态同步策略
-
-- **全量推送**：每次状态变更 → `broadcast()` 向所有连接发送完整 `PublicGameState`
-- **脏检查**：`webSocketMessage` 中用 `JSON.stringify(game)` 比较前后状态，有变化才 `save()`
-- **逐连接定制**：`broadcast( yourPlayerId? )` 中每个连接收到的 `yourPlayerId` 不同（取自 `playerIdFor(ws)`）
-
-### 5.5 前后端同源逻辑
-
-以下逻辑在 `src/game-room.ts` 和 `public/scripts/render.js` 中**各有一份实现**，修改时必须同步：
-
-| 逻辑 | 位置 | 说明 |
-|------|------|------|
-| `isRoundComplete()` | game-room.ts + render.js | 判断本轮下注是否完成 |
-| 可行动者过滤 | advanceTurn + render.js | `!isFolded && isActive && !isAllIn && !isSittingOut` |
-| 候选获胜者过滤 | handleEndHand 隐含 + render.js | 未弃牌者都可以是胜者 |
-| 位置标签计算 | assignPositions + render.js | D=0, SB=1, BB=2 |
-
----
-
-## 6. 扑克规则不变量
-
-> ⚠️ **动手前必读。这些规则曾因误解被反复改错。修改先读本节。**
-
-### 6.1 行动顺序
-
-**座位**：`position` 0=庄家(D) / 1=小盲(SB) / 2=大盲(BB) / 3=UTG…
-
-**多玩家（≥3）**：
-- 翻牌前首动 = UTG（BB 下家）= `nextActiveIndex(nextActiveIndex(nextActiveIndex(dealer)))`
-- 翻牌后 (flop/turn/river) 首动 = SB = `nextActiveIndex(dealer)`
-
-**单挑（2 玩家，heads-up）**：
-- 庄家即 SB（庄家在盲注位）
-- 翻牌前首动 = SB(=庄家) = `dealerIndex`
-- 翻牌后首动 = BB = `nextActiveIndex(dealer)`
-
-> ⚠️ **单挑翻牌后"大盲先动"是标准德州规则，不是 bug。** 曾被误当 bug 改成"永远小盲先动"又回退。
-
-**实现位置**：`game-room.ts` → `setFirstToAct()`
-
-### 6.2 断线坐出 (Sitting Out)
-
-> ⚠️ **这是刻意设计，不是 bug。** 早期版本断线即 fold、活跃环收缩，导致 SB/BB 塌缩到一人 + 一人独胜，已修复。
-
-**断线玩家在本手牌内的行为**：
-
-| 属性 | 行为 |
+| 路径 | 作用 |
 |------|------|
-| 座位 | ✅ 保持，不收缩 |
-| 盲注位次 | ✅ 保持，不影响下家判定 |
-| 底池权益 | ✅ 保留（未弃牌者仍争夺底池） |
-| 行动权 | ❌ 纯跳过（`advanceTurn` 跳过 `isSittingOut`） |
-| 筹码 | ❌ 不消耗（不 fold 不付筹码） |
-| 获胜条件 | ❌ 不因断线而出局 |
+| `GET .../exists` | `{ exists, createdAt }`；`expired` 时 false |
+| `GET .../state` | `publicState()` |
+| `POST .../init` | 设置盲注与 expiresAt，save + alarm |
+| `Upgrade: websocket` | `acceptWebSocket`，101 |
 
-**复活时机**：
-- 手牌进行中重连 → 仍保持 `isSittingOut=true`，等下一手牌
-- 等待状态（`waiting`）重连 → 立即清除 `isSittingOut`，恢复 `isActive`
-- 下一手牌 `startHand` → `isSittingOut = !isConnected`（在线则清除，离线则继续挂机）
+#### WebSocket 消息分发
 
-**关键谓词**（三处）：
-```typescript
-// "可行动"判定（advanceTurn / isRoundComplete / setFirstToAct）
-!isFolded && isActive && !isAllIn && !isSittingOut
+| type | 处理 |
+|------|------|
+| `join` | `handleJoin` |
+| `leave` | `handleLeave` → `markDisconnected` |
+| `action` | `handleAction` (fold/check/call/raise) |
+| `startHand` | `handleStartHand` |
+| `nextRound` | `handleNextRound` |
+| `endHand` | `handleEndHand(tiers, winnerIds)` |
+| `updateSettings` | 仅 waiting 改盲注 |
+| `rebuy` | 仅 waiting 补码 |
+| `removePlayer` | 仅 waiting 移除**离线**玩家 |
+| `sync` | 不改状态，只 `broadcast`（切前台补状态） |
+| `ping` | `pong`（不落盘） |
 
-// "仍在争夺底池"（handleAction 中判断是否只剩一人）
-!isFolded  // 注意：不含 isSittingOut —— 断线者仍算争夺者！
+状态变更后用 `JSON.stringify` 脏检查再 `save()`。
+
+#### 方法地图（按职责）
+
+```
+生命周期: constructor, loadOrCreate, save, alarm, nextCleanupMs, nextCleanupOrExpiry
+玩家:     handleJoin, handleLeave, markDisconnected, handleRebuy, handleRemovePlayer
+行动:     handleAction, resetActedFlags, advanceTurn, isRoundComplete
+轮次:     handleStartHand, handleNextRound, setFirstToAct, postBlinds,
+          shouldRunOutBoard, autoAdvanceToShowdown
+结算:     handleEndHand, awardPotsByTiers, awardToSoloSurvivor, checkSoloSurvivor
+位次:     assignPositions, nextActiveIndex, nextDifferentActiveIndex
+通信:     broadcast, publicState, sendError, sendToAll, playerIdFor
+设置:     handleSettings
 ```
 
-**实现位置**：`game-room.ts` → `markDisconnected()`, `advanceTurn()`, `isRoundComplete()`, `setFirstToAct()`, `handleAction()`
+#### handleJoin 身份恢复（4 条路径）
+
+1. 带 `playerId`，且 `playerDevices` 与 `deviceId` 兼容 → 重连  
+2. 无 playerId 但 `deviceId` 反查映射命中 → 重连  
+3. `waiting` 且同名且 `!isConnected` → 重连  
+4. `waiting` 且人数 <12 → 新建玩家（默认 1000 筹码）
+
+重连关键：**先** `connections.set` + `serializeAttachment`，**再** 关旧 socket。这样旧连接 `webSocketClose` 里 `hasAnotherConnection===true`，不会误挂机。
+
+- 手牌中重连：保持 `isSittingOut=true`  
+- waiting 重连：清 `isSittingOut`，恢复 `isActive`（若未 fold）  
+- 清 `disconnectedAt`
+
+#### handleAction 要点
+
+- 仅当前 `currentPlayerIndex` 且未 fold/all-in 可操作。
+- `toCall = currentBet - player.currentBet`
+- **raise**：  
+  - 筹码不够 → all-in；若推高了 `currentBet` 且加注幅度 ≥ bigBlind 才 `resetActedFlags`（不足额 all-in **不完整重开**）。  
+  - 非 all-in：**无条件** `raiseAmount >= bigBlind`。  
+- 操作后：若 `!isFolded` 只剩 1 人 → `awardToSoloSurvivor`（直接结算进 waiting）。  
+- 否则 `advanceTurn`；若 `isRoundComplete && shouldRunOutBoard` → `autoAdvanceToShowdown`。  
+- 否则仅提示「本轮下注完成，请点下一轮」。
+
+#### shouldRunOutBoard / autoAdvanceToShowdown
+
+当争夺者 ≥2，但可行动人数 ≤1（全员 all-in 或只剩一人可行动）时，跳过无意义的逐街 check：
+
+- `communityCards = 5`，`round = showdown`，仍需人手选胜。
+
+#### 边池结算 `awardPotsByTiers(tiers)`
+
+- `tiers[0]` = 第 1 名（可并列），`tiers[1]` = 第 2 名…  
+- 兼容旧客户端：只发 `winnerIds` 时包装成单层 `[[...]]`。  
+- 校验：id 存在、`!isFolded`、不跨档重复。  
+- 算法：按 `totalBet` 升序分层；每层 `layerAmount * 贡献人数`。  
+  - 该层无未弃牌合格者 → **退还**贡献者  
+  - 仅 1 名合格且未在 tiers 覆盖 → **自动**归其  
+  - ≥2 名合格且 tiers 未覆盖 → **拒绝**整次结算（两阶段规划，避免半结算）  
+- 成功后 `pot=0`，写 `sidePots` / `lastWinnerIds` / `lastAction`，`round → waiting`。
+
+#### 盲注 `postBlinds`
+
+- 单挑：dealer = SB；多人：SB = dealer 下家（`nextActiveIndex`）  
+- BB = SB 下家；强制 **SB ≠ BB**（`nextDifferentActiveIndex` 兜底）  
+- 实付 `min(blind, chips)`；`currentBet = max(sbAmt, bbAmt)`（跟注对齐有效最高注；最小加注仍按 bigBlind）
+
+#### setFirstToAct（最易改错）
+
+| 场景 | 首动 |
+|------|------|
+| 多人 preflop | UTG = BB 的下家 = `nextActive×3(dealer)` |
+| 多人 postflop | SB = `nextActive(dealer)` |
+| 单挑 preflop | dealer(=SB) |
+| 单挑 postflop | BB = `nextActive(dealer)` |
+
+从 startIdx 起找第一个可行动者（四字段谓词）。
+
+#### 每日清理与过期 `alarm`
+
+- alarm 目标 = min(下一北京 04:00, expiresAt)  
+- **TTL 未到且 round ≠ waiting**：绝不销毁，延后 15 分钟再查  
+- waiting 下的每日清理 **或** TTL 到期：关所有 WS、`RoomRegistry.remove`、`storage.deleteAll`、标记 `expired`
+
+北京 04:00 用 `Asia/Shanghai` 墙钟计算（`nextCleanupMs`），避开晚间牌局高峰。
+
+#### rebuy / removePlayer
+
+- 仅 `waiting`  
+- rebuy：默认 +`DEFAULT_CHIPS`，上限单次 100000，可指定 `targetPlayerId`  
+- removePlayer：只能移 `!isConnected` 的玩家；修正 `dealerIndex`
 
 ---
 
-## 7. 关键流程
+## 5. 前端
 
-### 7.1 房间创建
+### 5.1 视图 `public/index.html`
+
+| 视图 / 模态 | 内容 |
+|-------------|------|
+| `view-home` | 创建 / 加入 |
+| `view-lobby` | 排行榜、玩家、盲注、开始、补码/移除 |
+| `view-game` | 轮次、公共牌槽、底池、玩家、行动栏 |
+| `name-modal` | 输入昵称 |
+| `share-modal` | 分享房间码 |
+| `winner-modal` | 你赢了的庆祝 |
+
+PWA：`manifest.webmanifest` + `sw.js`（壳缓存 `pk-shell-v10`；API/WS 不拦截）。  
+静态资源 query `?v=9` 做 cache bust。
+
+### 5.2 模块
+
+| 模块 | 职责 |
+|------|------|
+| `app.js` | init、消息路由、`onState`、操作栏/大厅事件委托、创建加入房间、胜者庆祝去重、SW 注册 |
+| `socket.js` | 单例 WS；join 时带 playerId/deviceId；心跳 60s / pong 超时 240s；指数退避重连 max 30s；`visibilitychange` 发 `sync`+`ping` 或 `reconnectNow` |
+| `render.js` | lobby/game/actionBar；`isMyTurn` / `isRoundComplete`；摊牌 `selectedTiers`；离线时长文案 |
+| `actions.js` | fold 二次确认、raise 步进、all-in、endHand(tiers)、rebuy/remove |
+| `ui.js` | `$`、toast、modal、深链 `?room=`、Visual Viewport 键盘适配 |
+| `storage.js` | `pk_device_id`、`pk_players[roomId]` |
+| `feedback.js` | 轮到你：title「● 轮到你」、横幅、震动；**无音效**（避免抢 AirPods） |
+
+### 5.3 UI 行为摘要
+
+- 弃牌需点两次（2s 超时撤销）  
+- 加注 min 动态绑定 `bigBlind`；预览「加注 +X｜本次投入 Y｜线到 Z」  
+- 全押按钮直接 `raise(chips)`  
+- 摊牌：点玩家进当前档 →「下一档」→「确认结算」；可「上一档」撤销  
+- 切后台再回来：活连接 `sync` 重推状态；死连接立即重连；成功 toast「已恢复连接」
+
+### 5.4 CSS
+
+深色主题变量：`--bg #080b0a`、`--accent #d97757`、`--table-green` 等。  
+移动优先：safe-area、横屏、keyboard-open 时操作栏定位修正。
+
+---
+
+## 6. WebSocket 协议
+
+### 连接
+
+```
+Client                         Server
+  |--- WS /ws/ROOMID ---------->|  acceptWebSocket
+  |--- join {name, playerId?, deviceId?} -->|
+  |<-- state { state: PublicGameState + yourPlayerId } ---|
+  |--- ping ------------------->|
+  |<-- pong --------------------|
+  |--- sync ------------------->|  (重推 state，不改 game)
+```
+
+### 客户端 → 服务端
+
+| type | 主要字段 | 说明 |
+|------|----------|------|
+| `join` | name, playerId?, deviceId? | 加入/重连 |
+| `leave` | | 主动离开 → 坐出 |
+| `action` | action, amount? | fold/check/call/raise |
+| `startHand` | | 开始新手 |
+| `nextRound` | | 进下一街 |
+| `endHand` | tiers? 或 winnerIds? | 摊牌结算 |
+| `updateSettings` | settings.{smallBlind,bigBlind} | waiting |
+| `rebuy` | amount?, targetPlayerId? | waiting |
+| `removePlayer` | targetPlayerId | waiting，仅离线 |
+| `sync` | | 请求重推 |
+| `ping` | | 心跳 |
+
+### 服务端 → 客户端
+
+| type | 字段 |
+|------|------|
+| `state` | `state: PublicGameState`（每连接 `yourPlayerId` 不同） |
+| `error` | `message` |
+| `pong` | |
+
+`PublicGameState` **不含** `playerDevices`。
+
+---
+
+## 7. 扑克规则不变量
+
+> 动手改 `setFirstToAct` / `markDisconnected` / 谓词前必读。历史上有过「单挑翻牌后谁先动」和「断线=弃牌」两次严重回退。
+
+### 7.1 行动顺序
+
+- `dealerIndex`：players 数组下标  
+- 「下家」：`nextActiveIndex`（仅看 `isActive`，本手位次环不因断线收缩）
+
+**盲注**
+
+- 多人：SB = dealer 下家，BB = SB 下家  
+- 单挑：dealer = SB，另一人 = BB  
+- 永远 SB ≠ BB
+
+**首动**
+
+| | preflop | flop/turn/river |
+|--|---------|-----------------|
+| ≥3 人 | UTG（BB 下家） | SB |
+| 2 人 | SB（=庄家） | **BB** |
+
+⚠️ 单挑翻牌后 BB 先动是标准 NLHE，不是 bug。
+
+### 7.2 断线坐出（sitting-out）
+
+断线玩家**在本手内**：
+
+| 保持 | 不发生 |
+|------|--------|
+| 座位、isActive 位次环、底池权益（!isFolded） | fold、出局、付筹码、占用行动权 |
+
+实现：`markDisconnected` 设 `isSittingOut=true` + `disconnectedAt`（waiting 时只离线不挂机）。
+
+**谓词**
+
+```text
+可行动 = !isFolded && isActive && !isAllIn && !isSittingOut
+  用于：advanceTurn / isRoundComplete / setFirstToAct / 前端 isMyTurn
+
+争夺底池 = !isFolded
+  用于：独胜检测、摊牌候选（含挂机！）
+  禁止用 isSittingOut 把挂机者踢出争夺，否则「一人断线→另一人独赢」
+```
+
+**复活**
+
+- 手牌中重连：仍挂机  
+- waiting 重连：立即清挂机  
+- `startHand`：`isSittingOut = !isConnected`
+
+**独胜**
+
+- `checkSoloSurvivor` / fold 后只剩一人：`awardToSoloSurvivor` → 结算后进 **waiting**（可直接开下一手）  
+- 挂机者仍 `!isFolded`，因此不会因一人断线而独胜
+
+### 7.3 下注规则（当前实现）
+
+- 最小加注/开池下注增量：**≥ bigBlind**（开池与加注同一标准）  
+- 不足额 all-in 不 `resetActedFlags`：已行动者只需补跟  
+- 无 straddle；最小加注不是「上次加注额」
+
+---
+
+## 8. 关键流程
+
+### 8.1 建房
 
 ```
 POST /api/rooms
-  │
-  ├─ 1. 解析请求体（可选的 smallBlind, bigBlind）
-  ├─ 2. 最多 8 次尝试：
-  │     generateRoomCode() → RoomRegistry.claim(expiresAt)
-  │     成功 → 跳出循环
-  ├─ 3. 获取 GameRoom DO stub (env.GAME_ROOM.getByName(roomId))
-  ├─ 4. 调用 GameRoom.fetch('/init', {method:'POST', body:{expiresAt,...}})
-  │     └─ loadOrCreate → 初始化 GameState → 设置 alarm
-  ├─ 5. 返回 { roomId, smallBlind, bigBlind }
-  │
-  └─ 失败：回滚 RoomRegistry.remove(roomId)
+  → claim 房号（最多 8 次）
+  → GameRoom POST /init { expiresAt, 可选盲注 }
+  → { roomId, smallBlind, bigBlind }
 ```
 
-### 7.2 玩家加入与重连
-
-```
-WebSocket 连接建立
-  │
-  └─ webSocketMessage({type:'join', name, playerId?, deviceId?})
-       │
-       ├─ 路径1: playerId 匹配 playerDevices 映射 → 重连
-       ├─ 路径2: deviceId 反向匹配 playerDevices → 重连
-       ├─ 路径3: waiting 状态 + name + !isConnected → 重连
-       └─ 路径4: 全新加入（需 waiting 状态 + 人数<12）
-            │
-            └─ 创建新 Player + 写入 playerDevices 映射
-       │
-       └─ broadcast(yourPlayerId)
-```
-
-**重连正确性保证**：
-1. 先注册新连接（`connections.set(ws, playerId)` + `serializeAttachment`）
-2. 再关闭旧连接（`socket.close(1000, '已在新连接中恢复')`）
-3. 旧连接的 `webSocketClose` 回调中 `hasAnotherConnection = true` → 不触发 `markDisconnected`
-
-### 7.3 一手牌的完整生命周期
+### 8.2 一手牌生命周期
 
 ```
 waiting
-  │  handleStartHand()
-  │  ├─ 过滤活跃玩家（isConnected && chips > 0），需 ≥2 人
-  │  ├─ 移动 dealer（上一手牌后下移一位）
-  │  ├─ 清除所有玩家手牌状态（fold/all-in/bets 归零）
-  │  ├─ isSittingOut = !isConnected（在线复活，离线挂机）
-  │  ├─ assignPositions()（按 dealer 起点分配位置编号）
-  │  └─ postBlinds() + setFirstToAct()
-  ▼
-preflop
-  │  玩家轮流操作（handleAction: fold/check/call/raise）
-  │  └─ isRoundComplete() → handleNextRound()
-  ▼
-flop (3 张公共牌)
-  │  同 preflop
-  ▼
-turn (4 张公共牌)
-  │  同 preflop
-  ▼
-river (5 张公共牌)
-  │  同 preflop
-  ▼
-showdown
-  │  等待玩家选择获胜者
-  │  └─ handleEndHand(winnerIds) → awardPot()
-  ▼
-waiting（循环）
+  handleStartHand
+    活跃 = isConnected && chips>0（≥2）
+    handNumber++，清 sidePots / lastWinnerIds
+    移动 dealer（第二手起）
+    清 fold/all-in/注；isSittingOut=!isConnected
+    assignPositions → postBlinds → setFirstToAct
+    若已 shouldRunOutBoard → 直接 showdown
+    ▼
+preflop → (行动循环) → isRoundComplete → 用户 nextRound 或 auto showdown
+    ▼
+flop (communityCards=3) → …
+turn (4) → river (5) → showdown
+    ▼
+showdown：人手选 tiers → awardPotsByTiers → waiting
 ```
 
-**中途结束**：任何时候若 `!isFolded` 的玩家只剩 1 人 → 直接进入 showdown → `awardPot`
+中途：只剩一人 `!isFolded` → 立即结算回 waiting。
 
-### 7.4 每日重置
+### 8.3 房间销毁
 
-**触发时机**：每次 `fetch()` 调用前，`checkDailyReset()` 检查日期是否变化。
-
-**日期计算**：北京时间（Asia/Shanghai），**边界为凌晨 4:00**。实现方式：用 `Date.now() - 4*60*60*1000` 调整，然后格式化 `yyyy-MM-dd`。
-
-**重置行为**：清空所有玩家，回到 `waiting` 状态，保留 `roomId` 和 `expiresAt`。
-
-### 7.5 房间过期
-
-```
-alarm 触发（7 天 TTL）
-  │
-  ├─ 关闭所有 WebSocket 连接（close code 1000, reason '房间已过期'）
-  ├─ RoomRegistry.remove(roomId)
-  └─ ctx.storage.deleteAll()
-```
+- 北京 04:00 alarm + waiting → 销毁  
+- 手牌中 → 推迟 15 分钟  
+- `expiresAt`（创建 +7 天）→ 销毁  
 
 ---
 
-## 8. 测试
+## 9. 前后端同源逻辑
 
-**文件**：`test/game-room.test.ts`（707 行，22 个测试用例）
+以下逻辑两端各有一份，**改一处必须改另一处**。
 
-**框架**：Vitest + `@cloudflare/vitest-pool-workers`（Miniflare 模拟环境）
+| 逻辑 | 后端 | 前端 |
+|------|------|------|
+| `isRoundComplete` | `game-room.ts` | `render.js` `isRoundComplete` |
+| 可行动 / 是否轮到我 | `advanceTurn` / `setFirstToAct` | `render.js` `isMyTurn`、卡片 `isTurn` |
+| toCall | `handleAction` | `renderActionBar` |
+| D/SB/BB 标签 | `assignPositions` + postBlinds 位次 | `renderGame` 用 active 环推 SB/BB |
+| 摊牌候选 | 校验 `!isFolded` | `!isFolded`（**含** sitting-out） |
 
-**辅助类**：`TestSocket` 封装 WebSocket 连接：
-- `send(msg)`：发送 JSON 消息
-- `waitForState()`：等待下一个 `state` 消息并返回 `PublicGameState`
-- `waitForError()`：等待错误消息
-- `expectError(msg)`：断言收到指定错误
-
-**测试结构**（7 个 describe 块）：
-
-| 测试组 | 用例数 | 覆盖内容 |
-|--------|--------|----------|
-| 基础流程 | 4 | 创建房间、12人上限、游戏中拒绝加入、WebSocket 直连 |
-| 手牌流程 | 2 | 2人桌完整一手牌、3人桌 UTG 先动 |
-| 极限与异常 | 7 | 重复操作、断线语义、零筹码、All-in、盲注修改拒绝、nextRound 校验、turn 进入 |
-| 每日重置 | 1 | 日期字符串比较 |
-| 并发重连与盲注防御 | 2 | SB≠BB 保证、重连不误判离线 |
-| 断线坐出语义 | 4 | 跳过行动、不提前获胜、手牌中重连仍坐出、下局复活 |
-| 房间目录与过期 | 5 | 404、API 创建、deviceId 重连、alarm 清理、exists 检测 |
-
-**运行**：
-```bash
-npm test                    # vitest run
-npx vitest run --reporter=verbose  # 详细输出
-```
-
-**已知问题**：Cloudflare vitest pool 在沙箱中启动可能 ~90s 超时。替代方案：将 `setFirstToAct/advanceTurn/postBlinds/nextActiveIndex` 原样抄进纯 Node `.mjs` 文件跑模拟。
+修改协议建议：后端先改 → grep 前端同名表达式 → 补测 → 部署。
 
 ---
 
-## 9. 部署与运维
+## 10. 测试
 
-### 部署命令
+文件：`test/game-room.test.ts`  
+框架：Vitest + Cloudflare workers pool（Miniflare）。
+
+主要 describe：
+
+| 组 | 覆盖 |
+|----|------|
+| 基础流程 | 建房、12 人上限、游戏中拒加入、WS 加入 |
+| 手牌流程 | 2 人桌盲注与顺序、3 人 UTG 先动 |
+| 极限与异常 | 重复操作、断线坐出、零筹码、all-in、盲注锁定、nextRound 校验 |
+| 每日清理 | alarm 销毁房间与目录 |
+| Side pot | 多路 all-in 分层、平手分池 |
+| 并发重连 | SB≠BB、重连不误离线 |
+| 断线坐出语义 | 跳过行动、不提前独胜、本手重连仍挂机 |
+| 房间目录 | 404、exists、deviceId 重连、alarm 清理 |
 
 ```bash
-npx wrangler deploy    # 部署到 Cloudflare Workers
+npm test
+npx tsc --noEmit
 ```
 
-**注意**：
-- 无热更新，每次后端改动都需要重新部署
-- DO 房间状态跨部署保留，进行中的手牌不回填状态，**下一手/下一轮**才走新代码
-- 部署后记录 `Current Version ID`
+**注意**：部分沙箱里 vitest pool 启动可能很慢或超时。验证行动顺序时，可把 `setFirstToAct` / `advanceTurn` / `postBlinds` / `nextActiveIndex` 原样抄到纯 Node 脚本做 2/3/4 人模拟（不依赖 workers pool）。
 
-### 本地开发
+---
 
-```bash
-npm run dev     # wrangler dev（本地模拟）
-npm run tail    # wrangler tail（线上日志流）
-```
+## 11. 部署与运维
 
-### 配置
+### wrangler.toml 要点
 
-**wrangler.toml**：
 ```toml
 name = "poker-scorer"
 main = "src/index.ts"
@@ -819,108 +585,127 @@ new_sqlite_classes = ["GameRoom"]
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["RoomRegistry"]
-
-[observability]
-enabled = true
-head_sampling_rate = 1
 ```
 
-**⚠️ 必须保持 `new_sqlite_classes`**：Free Tier 只支持 SQLite-backed DO。改回 `new_classes` 会破坏运行。
+⚠️ **必须** `new_sqlite_classes`。Free Tier 不支持旧式 KV-backed DO。若历史上曾用 `new_classes` 创建过同名 namespace，Cloudflare **不会**原地转 SQLite，需在 Dashboard 删除旧 namespace（数据会丢）后再部署。
+
+### 命令
+
+```bash
+npm run dev       # 本地
+npm run deploy    # 生产；记录 Current Version ID
+npm run tail      # 日志
+```
+
+后端无热更新；DO 状态跨版本保留。
+
+### 线上地址
+
+https://poker-scorer.1956133426lpy.workers.dev/
 
 ### 线上自测
 
 ```bash
-# 创建房间
-curl -X POST https://<worker>/api/rooms
-# → { "roomId": "ABC234", "smallBlind": 10, "bigBlind": 20 }
+curl -X POST https://poker-scorer.1956133426lpy.workers.dev/api/rooms
+# → {"roomId":"ABC234","smallBlind":10,"bigBlind":20}
 
-# 查询状态
-curl https://<worker>/api/rooms/ABC234/state
-# → PublicGameState JSON
-
-# 检查存在
-curl https://<worker>/api/rooms/ABC234/exists
-# → { "exists": true, "roomId": "ABC234" }
-
-# 非法房号（含 0/1）→ 落到 ASSETS 报 1101，正常行为
+curl https://poker-scorer.1956133426lpy.workers.dev/api/rooms/ABC234/state
+curl https://poker-scorer.1956133426lpy.workers.dev/api/rooms/ABC234/exists
 ```
 
-### 日志
+### 前端 cache
 
-```bash
-npx wrangler tail    # 实时日志流
-```
+改 `public/scripts/*` 或 CSS 后：同步 bump `index.html` / `sw.js` 里的 `?v=` 与 `CACHE` 名，否则 PWA 壳可能继续用旧脚本。
 
 ---
 
-## 10. 已知问题与设计决策
+## 12. 设计决策与已知局限
 
-### 已知问题
+### 决策
 
-| ID | 问题 | 影响 | 状态 |
-|----|------|------|------|
-| A1 | 单人存活时需手动选胜者 | 不自动 awardPot，需点"摊牌选胜者" | 未修复 |
-| A2 | raise 最小加注检查在 currentBet=0 时可被绕过 | 翻牌后首次加注可能低于 bigBlind | 未修复 |
-| A3 | waiting 中断线不移除玩家 | 离线者占座不退出（与文档描述不一致） | 设计如此 |
-| A4 | 无"房主"概念 | 任何人都能 startHand/endHand/updateSettings | 设计如此 |
-| A5 | waiting 中断线不自动重连 | 需手动刷新 | 未修复 |
-| B1 | `normalizeDealerIndex()` 未被调用 | 死代码 | 未清理 |
-| B2 | `lastActor` 字段冗余 | 与 `lastAction` 重复 | 未清理 |
-| B3 | `JSON.stringify` 脏检查每次执行两次 | 性能微损耗 | 可接受 |
-| B4 | RoomRegistry 过期清理依赖 alarm | 不活跃的房间注册表可能残留在 SQLite | 可接受 |
+1. 计分器而非完整扑克引擎 → 摊牌人手选胜，实现边池用排名分档而非牌力计算。  
+2. 断线=坐出≠弃牌 → 线下「去拿可乐」不应丢底池。  
+3. 无房主 → 熟人局信任模型。  
+4. 全量 broadcast → 状态小、调试简单。  
+5. 每日 04:00 销毁空闲房 + 7 天 TTL → Free Tier 垃圾回收。  
+6. 音效移除 → 系统会把页面当媒体播放源抢耳机。
 
-> 注：`worker-configuration.d.ts`(542KB) 和 `.DS_Store` 已加入 `.gitignore`，不会进入版本库。
+### 局限 / 可改进点
 
-### 核心设计决策
+| 项 | 说明 |
+|----|------|
+| 最小加注 | 固定 bigBlind，非「上次加注增量」 |
+| 无 straddle | — |
+| 无权限模型 | 任何人可 start/end/settings/rebuy/remove |
+| 每日清理 | waiting 时**整房销毁**（不是只清筹码）；进行中会推迟 |
+| 前端 raise input | HTML 默认 min=0，运行时由 render 设为 bigBlind；后端仍是最终校验 |
+| `lastActor` | 与 `lastAction` 语义重叠，历史字段 |
 
-1. **瘦客户端**：前端不做游戏逻辑判决，只渲染后端状态。确保单一事实来源。
-2. **全量状态同步**：每次状态变更 broadcast 完整 `PublicGameState`。简单可靠，状态 < 10KB。
-3. **断线=坐出≠弃牌**：防止一人断线导致另一人独赢。详见 §6.2。
-4. **无身份认证**：通过 `deviceId`（localStorage UUID）+ `playerId` 做设备级身份恢复，无密码。
-5. **单房间串行**：利用 DO 的天然串行保证，避免分布式锁。
+历史上审计过的问题多数已在 2026-07 左右修复，包括：raise 在 currentBet=0 时的限额、边池/退还、全体 all-in 自动摊牌、winner 校验、BB 短码 currentBet、不足额 all-in 不重开、独胜后回 waiting、挂机可选胜、补码与移除离线者、切前台 sync 等。以**当前代码**为准，不要按旧审计文档假设未修。
 
 ---
 
-## 附录 A：文件依赖图
+## 13. 修改安全地图
+
+### 改这些函数时必做
+
+| 改动 | 必验 |
+|------|------|
+| `setFirstToAct` / `nextActiveIndex` | 2 人 preflop/postflop + 3/4 人 preflop/postflop 首动 |
+| `markDisconnected` / sitting-out 谓词 | 断线不独赢、跳过行动、本手重连仍挂机、下局复活 |
+| `isRoundComplete` / `advanceTurn` | 同步 `render.js` |
+| `awardPotsByTiers` | 多路 all-in、平分、退还、未排满拒绝 |
+| `postBlinds` | SB≠BB；单挑庄家=SB |
+| 消息协议 / `types.ts` | 前后端字段与 `actions.js` 发送一致 |
+| 每日 alarm | 手牌中不销毁；waiting 可清 |
+
+### 依赖关系
 
 ```
-src/index.ts
-  ├── src/types.ts (generateRoomCode, ROOM_TTL_MS)
-  ├── src/env.ts (Env 类型)
-  ├── src/game-room.ts (GameRoom DO 类，通过 export 暴露给 wrangler)
-  └── src/room-registry.ts (RoomRegistry DO 类，通过 export 暴露给 wrangler)
-
-src/game-room.ts
-  ├── src/types.ts (全部类型和常量)
-  └── src/env.ts (Env 类型)
+types.ts
+  ├── index.ts
+  ├── game-room.ts ──► test/game-room.test.ts
+  └── （前端无 TS import，靠协议约定）
 
 public/scripts/app.js
-  ├── socket.js (connect, disconnect, send, onConn, onMessage)
-  ├── render.js (renderLobby, renderGame, renderActionBar)
-  ├── actions.js (sendAction, startHand, nextRound, confirmWinners, updateSettings)
-  ├── ui.js ($, $$, toast, showView, showModal, closeModal, closeTopModal, esc, renderConnDot, applyDeepLink)
-  ├── storage.js (deviceId, getSavedPlayer, savePlayer)
-  └── feedback.js (notifyTurn)
-
-public/index.html
-  ├── styles.css
-  ├── scripts/app.js (type="module")
-  └── sw.js 注册
+  ├── socket.js → storage.js
+  ├── render.js → ui.js
+  ├── actions.js → socket.js, render.js, ui.js
+  ├── feedback.js
+  └── ui.js
 ```
 
-## 附录 B：关键修改热力图
+### 经验法则
+
+1. 改 `game-room.ts` → 跑测试 + typecheck，再 deploy。  
+2. 改谓词 → 同步 `render.js`（及 `isMyTurn` 调用方）。  
+3. 改静态资源 → bump cache version。  
+4. 不要「顺手」把断线改回 fold，不要「修正」单挑翻牌后为 SB 先动。
+
+---
+
+## 附录：一手从用户视角的状态机
 
 ```
-                    ┌── 修改频率最高 ──┐
-src/game-room.ts   ████████████████████  (全部游戏逻辑)
-src/types.ts       ████████              (类型/常量变更)
-src/index.ts       ████                  (路由变更)
-test/...           ████████              (跟随 game-room 变更)
-render.js          ██████                (需与后端同步)
-actions.js         ███                   (操作 UI 变更)
-app.js             ███                   (事件绑定变更)
-socket.js          ██                    (连接策略变更)
-其余文件           █                     (低频变更)
+首页 create/join
+  → 大厅 waiting（补码/改盲注/移除离线）
+  → startHand → preflop
+  → 行动… → [下一轮 | 自动摊牌]
+  → flop / turn / river
+  → showdown（选名次档）
+  → 结算 → waiting
+  → 循环或离开
 ```
 
-**经验法则**：改 `game-room.ts` → 必跑全部测试；改 `setFirstToAct/advanceTurn/postBlinds/isRoundComplete` → 必验证行动顺序；改 `isSittingOut` 相关 → 必验证断线场景；改 `render.js` → 必检查与后端谓词一致。
+断线：手牌中 → 挂机跳过；等待中 → 离线占座（可被移除）。  
+房间：北京 04:00 空闲销毁，或 7 天 TTL。
+
+---
+
+读完本文与 [README](../README.md) 后，建议按这个顺序读代码以巩固：
+
+1. `src/types.ts` — 状态长什么样  
+2. `src/index.ts` — 请求怎么进房  
+3. `src/game-room.ts` — `handleStartHand` → `postBlinds` → `setFirstToAct` → `handleAction` → `awardPotsByTiers`  
+4. `public/scripts/socket.js` + `app.js` + `render.js` — 状态如何上屏  
+5. `test/game-room.test.ts` — 不变量如何被锁住  
