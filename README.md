@@ -17,7 +17,7 @@
 | 创建/加入房间，最多 12 人 | 发牌、洗牌、算牌力 |
 | 记盲注、下注、跟注、加注、全押、弃牌 | 自动判定谁赢（由人在摊牌时选名次） |
 | 轮转行动权，推进翻牌前→翻牌→转牌→河牌→摊牌 | 账号密码、房主权限、匹配大厅 |
-| 主池/边池按排名分档结算 | 自动 straddle、最小加注=上次加注额（当前简化为大盲） |
+| 主池/边池按排名分档结算 | 自动 straddle（最小加注已按上次有效加注额） |
 | 断线坐出、补码、移除离线占座 | 中途销毁进行中的手牌 |
 
 ---
@@ -30,10 +30,12 @@
 4. 至少 2 人在线且有筹码 → **开始游戏**。
 5. 轮到你时底部出现操作栏：弃牌 / 过牌或跟注 / 加注 / 全押。
 6. 本轮下注结束后点 **下一轮**（全员 all-in 等无法再对峙时会自动进摊牌）。
-7. 摊牌：按牌力从强到弱选名次档位（可并列；有边池时用「下一档」排完）→ **确认结算**。
+7. 摊牌：按牌力从强到弱选名次档位（可并列；有边池时用「下一档」排完）→ 查看服务端给出的「谁赢多少」预览 → **确认结算**。
 8. 回到大厅，可继续下一手或补码。
 
 **断线行为（刻意设计）**：手牌中断线的人**不会被弃牌**，只坐出挂机（占座、保底池权益、跳过行动）。本手内重连仍挂机，**下一手发牌**才复活。大厅里会显示「已离线 N 分钟」，方便桌上的人决定是否移除。
+
+**信任模型**：首个成功入桌且带设备 ID 的玩家为**房主**。仅房主可改盲注、最终结算、给他人补码、移除离线；行动 / 开下一手 / 结算预览仍全员可操作。建房时可设可选入桌口令。
 
 ---
 
@@ -48,7 +50,7 @@
 | 前端 | 零构建 ES Module + 原生 CSS，PWA |
 | 后端语言 | TypeScript |
 | 测试 | Vitest + `@cloudflare/vitest-pool-workers` |
-| 部署 | `wrangler deploy`（无 CI/CD） |
+| 验证 / 部署 | GitHub Actions（typecheck + test）/ `wrangler deploy` 手动生产部署 |
 
 核心设计：**瘦客户端**——前端只渲染后端下发的 `PublicGameState` / `currentPlayerIndex`，游戏判决全在 `GameRoom` 内串行执行。
 
@@ -61,6 +63,8 @@ poker-scorer/
 ├── src/
 │   ├── index.ts          # Worker 入口：HTTP 路由、建房、转发到 DO
 │   ├── game-room.ts      # GameRoom DO：全部游戏逻辑 + WebSocket（核心）
+│   ├── pot-settlement.ts # 主池/边池只读规划与精确预览
+│   ├── player-rules.ts   # 可行动/争夺底池等纯谓词
 │   ├── room-registry.ts  # RoomRegistry DO：房号唯一性
 │   ├── types.ts          # 类型、常量、房号生成
 │   └── env.ts            # Env 类型（继承 Cloudflare 生成绑定）
@@ -71,7 +75,9 @@ poker-scorer/
 │   ├── manifest.webmanifest
 │   └── scripts/          # 前端模块（见技术文档）
 ├── test/
-│   └── game-room.test.ts # 端到端风格 DO 测试
+│   ├── game-room.test.ts # 端到端风格 DO 测试
+│   └── pot-settlement.test.ts # 纯结算规划测试
+├── .github/workflows/ci.yml # push/PR 自动验证
 ├── docs/
 │   └── TECHNICAL.md      # 完整技术文档
 ├── wrangler.toml
@@ -96,13 +102,14 @@ npm run dev          # wrangler dev，本地模拟 Worker + DO + 静态资源
 npm run typecheck    # tsc --noEmit
 npm test             # vitest（Cloudflare workers pool，沙箱里可能较慢）
 npm run check        # typecheck + test + wrangler dry-run
-npm run deploy       # 部署到 Cloudflare Workers
+npm run deploy       # 打印发布检查清单后部署到 Cloudflare Workers
 npm run tail         # 线上实时日志
 ```
 
 ### 部署注意
 
 - 后端改动**没有热更新**，必须 `npm run deploy` 后才对线上生效。
+- 发布前同步更新 `SERVER_VERSION`、静态资源 `?v=` 与 Service Worker `CACHE`；`predeploy` 会打印检查清单。
 - DO 房间状态跨部署保留；进行中的一手牌不会自动重写，**下一手/下一轮**才走新代码。
 - `wrangler.toml` 必须保持 `new_sqlite_classes`（Free Tier 只支持 SQLite-backed DO）。**不要**改回 `new_classes`。
 - 房号字符集为 `A-Z2-9` 且排除 `0/1`（防与 O/I 混淆）。自造含 0/1 的路径会落到静态资源而报错，属正常。
@@ -131,10 +138,9 @@ npm run tail         # 线上实时日志
 
 这些在线下熟人局通常够用；改之前先读技术文档对应章节。
 
-- **最小加注增量**固定为大盲，不是标准 NLHE 的「上次加注额」。
 - **无 straddle**。
-- **无账号/房主**：任何在线玩家都能开局、改盲注、结算、补码、移除离线者。
-- **每日北京时间 04:00 清理**：房间在 **waiting** 时会被销毁；手牌进行中会推迟 15 分钟再检查。另有 **7 天 TTL**。
+- **无完整账号体系**：房主绑定 `deviceId`（首个入桌设备），不支持转让 UI / OAuth。
+- **每日北京时间 04:00**：waiting 时 **soft reset**（保留座位与筹码，清牌局进度）；手牌进行中推迟 15 分钟。**7 天 TTL** 仍硬销毁房间。
 - 摊牌胜者由人手选；边池要求按牌力**排完名次档位**，否则服务端拒绝结算并提示。
 
 ---
@@ -145,6 +151,6 @@ npm run tail         # 线上实时日志
 |------|------|
 | [README.md](./README.md) | 产品说明、上手、结构、部署入口 |
 | [docs/TECHNICAL.md](./docs/TECHNICAL.md) | 架构、协议、关键逻辑、不变量、前后端同源清单、运维 |
-| [docs/RISKS_AND_IMPROVEMENTS.md](./docs/RISKS_AND_IMPROVEMENTS.md) | 风险速查 + **AI 可单卡执行的改进任务**（T01–T25，按 200k 窗口裁切） |
+| [docs/ARCHITECTURE_PATTERNS.md](./docs/ARCHITECTURE_PATTERNS.md) | 设计模式映射、分层依赖、演进清单（接替已完成的 issue 任务卡） |
 
-历史 WORKLOG / 审计手册 / Agent 导航中的稳定结论已并入技术文档与风险评估文档。
+历史 WORKLOG / 审计 / 任务卡结论已并入技术文档与架构模式文档。

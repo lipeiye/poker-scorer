@@ -1,9 +1,16 @@
 // 玩家操作层：弃牌/过牌/跟注/加注/全押/下一轮/摊牌排名分档/盲注设置。
 // 集中处理：触觉反馈(M7)、弃牌二次确认(M8)、加注金额步进、加注总额实时预览。
 // 不直接持状态，所有操作通过 socket.send 发出。
-import { $, toast } from './ui.js?v=9';
-import { send } from './socket.js?v=9';
-import { clearSelectedWinners, getTiers, advanceTier, undoTier } from './render.js?v=9';
+import { $, toast } from './ui.js?v=13';
+import { send, getMyPlayerId } from './socket.js?v=13';
+import {
+  clearSelectedWinners,
+  clearSettlementPreview,
+  getTiers,
+  setSettlementPreview,
+  advanceTier,
+  undoTier,
+} from './render.js?v=13';
 
 // ---------- M7: 触觉反馈 ----------
 export function vibrate(pattern) {
@@ -16,9 +23,11 @@ export function vibrate(pattern) {
 export function showRaise(state, myPlayerId) {
   $('#raise-control').style.display = 'flex';
   const me = state.players.find((p) => p.id === myPlayerId);
-  const max = me ? me.chips : state.bigBlind;
+  const minRaise = state.minRaise || state.bigBlind;
+  const max = me ? me.chips : minRaise;
   const inp = $('#raise-amount');
-  inp.value = state.bigBlind;
+  inp.value = minRaise;
+  inp.min = minRaise;
   inp.max = max;
   updateRaiseHint(state, myPlayerId);
   vibrate(8);
@@ -43,11 +52,12 @@ function updateRaiseHint(state, myPlayerId) {
 
 export function adjustRaise(dir, state, myPlayerId) {
   const inp = $('#raise-amount');
-  const step = state.bigBlind;
+  const minRaise = state.minRaise || state.bigBlind;
+  const step = minRaise;
   const me = state.players.find((p) => p.id === myPlayerId);
   const cur = parseInt(inp.value || step);
   const min = parseInt(inp.min) || step;
-  // 下限 = 大盲，上限 = 我的全部筹码
+  // 下限 = 当前最小加注增量，上限 = 我的全部筹码
   const max = me ? me.chips : step;
   inp.value = Math.max(min, Math.min(cur + dir * step, max));
   updateRaiseHint(state, myPlayerId);
@@ -132,6 +142,9 @@ export function nextRound() {
 }
 
 // ---------- 摊牌排名分档 ----------
+let pendingSettlementTiers = null;
+let settlementSubmitting = false;
+
 /** 把当前档位提交并入下一档 */
 export function nextTier() {
   advanceTier();
@@ -141,11 +154,41 @@ export function prevTier() {
   undoTier();
 }
 
-/** 结算：把已选的全部档位作为 tiers 发给服务端按主池/边池分配 */
+/** 先请求服务端权威预览；未看过预览不能发送真实结算。 */
 export function confirmTiers() {
   const tiers = getTiers();
   if (tiers.length === 0) return;
-  send({ type: 'endHand', tiers });
+  pendingSettlementTiers = tiers.map((tier) => tier.slice());
+  clearSettlementPreview();
+  send({ type: 'previewEndHand', tiers: pendingSettlementTiers });
+}
+
+export function applySettlementPreview(preview) {
+  if (!pendingSettlementTiers || !preview) return false;
+  settlementSubmitting = false;
+  setSettlementPreview(preview);
+  return true;
+}
+
+export function commitSettlement() {
+  if (!pendingSettlementTiers || settlementSubmitting) return;
+  settlementSubmitting = true;
+  send({ type: 'endHand', tiers: pendingSettlementTiers });
+}
+
+export function handleSettlementError() {
+  settlementSubmitting = false;
+}
+
+export function cancelSettlementPreview() {
+  settlementSubmitting = false;
+  pendingSettlementTiers = null;
+  clearSettlementPreview();
+}
+
+export function resetSettlementFlow() {
+  settlementSubmitting = false;
+  pendingSettlementTiers = null;
   clearSelectedWinners();
 }
 
@@ -154,12 +197,15 @@ export function updateSettings() {
   const sb = parseInt($('#set-sb').value) || 10;
   const bb = parseInt($('#set-bb').value) || 20;
   if (bb <= sb) return; // 后端会校验，前端先挡一层
+  if (!confirm(`将盲注改为 SB ${sb}/BB ${bb}？`)) return;
   send({ type: 'updateSettings', settings: { smallBlind: sb, bigBlind: bb } });
 }
 
 // ---------- 补码 / 移除离线玩家（仅 waiting） ----------
 /** 默认补 1000（与后端 DEFAULT_CHIPS 一致）；可传入 amount */
 export function rebuy(targetPlayerId, amount) {
+  if (targetPlayerId && targetPlayerId !== getMyPlayerId()
+    && !confirm('确定给该玩家补码？')) return;
   const msg = { type: 'rebuy', targetPlayerId };
   if (amount != null) msg.amount = amount;
   send(msg);

@@ -1,6 +1,7 @@
 name = "poker-scorer"
 main = "src/index.ts"
-compatibility_date = "2026-06-20"
+compatibility_date = "2026-07-19"
+compatibility_flags = ["nodejs_compat"]
 
 # Static assets (frontend)
 [assets]

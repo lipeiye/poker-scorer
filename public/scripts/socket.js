@@ -1,6 +1,6 @@
 // WebSocket 连接管理：建连、join、断线重连、连接状态广播、心跳保活。
 // 不直接碰 DOM（状态展示由 ui.js 订阅 onConn 完成），只对外暴露 send/事件。
-import { deviceId, getSavedPlayer, savePlayer } from './storage.js?v=9';
+import { deviceId, getSavedPlayer, savePlayer } from './storage.js?v=13';
 
 /** @typedef {'connected'|'connecting'|'offline'} ConnState */
 
@@ -67,6 +67,13 @@ export function setMyPlayerId(id) {
 
 // ---------- 建连 / 重连 ----------
 
+/** 可选入桌口令（建房/加入时由 app 设置；重连时一并带上）。 */
+let pendingPassword = '';
+
+export function setJoinPassword(password) {
+  pendingPassword = password ? String(password) : '';
+}
+
 /** 建立/重建 WebSocket。hostSharePending 由 app 层管理，这里只负责连接本身。 */
 export function connect(roomId, name) {
   if (ws) {
@@ -88,12 +95,14 @@ export function connect(roomId, name) {
     reconnectAttempt = 0; // 成功连接后重置退避
     setupHeartbeat();
     const saved = getSavedPlayer(roomId);
-    send({
+    const joinMsg = {
       type: 'join',
       name: name,
       playerId: saved ? saved.playerId : undefined,
       deviceId: deviceId(),
-    });
+    };
+    if (pendingPassword) joinMsg.password = pendingPassword;
+    send(joinMsg);
   };
 
   ws.onmessage = (e) => {

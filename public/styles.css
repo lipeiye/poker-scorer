@@ -188,6 +188,8 @@ button:focus-visible,input:focus-visible{outline:3px solid rgba(126,226,168,.36)
 .log-text{font-size:12px;color:var(--dim);text-align:center;line-height:1.55}
 
 .settings-card{margin:4px 16px;padding:4px 16px;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface)}
+.room-notices{margin:14px 16px 18px;padding:13px 15px;border:1px solid rgba(255,179,92,.2);border-radius:15px;background:rgba(255,179,92,.06);color:#c8cec9;font-size:12px;line-height:1.55}
+.room-notices p+p{margin-top:6px;color:var(--dim)}
 .settings-row{display:flex;align-items:center;justify-content:space-between;min-height:58px;padding:8px 0}
 .settings-row+ .settings-row{border-top:1px solid var(--border)}
 .settings-row label{font-size:15px;color:#d9ddda}
@@ -228,6 +230,10 @@ button:focus-visible,input:focus-visible{outline:3px solid rgba(126,226,168,.36)
 .winner-modal h2{margin-top:5px;font-size:27px}
 .winner-modal .btn{max-width:none;margin-top:20px}
 .next-round-bar{padding:8px 16px;text-align:center;margin-bottom:8px}
+.settlement-preview{flex:1 0 100%;width:100%;padding:7px 12px;border:1px solid rgba(126,226,168,.22);border-radius:15px;background:rgba(126,226,168,.07)}
+.settlement-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:8px 0;color:#d9e2dc;font-size:13px}
+.settlement-row+.settlement-row{border-top:1px solid var(--border)}
+.settlement-row strong{color:var(--accent);font-variant-numeric:tabular-nums}
 
 @media (min-width:720px){
   .player-list{display:grid;grid-template-columns:1fr 1fr;gap:10px 12px;padding:4px 16px}

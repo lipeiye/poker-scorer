@@ -65,6 +65,7 @@ export default {
         roomId,
         smallBlind: initData.smallBlind,
         bigBlind: initData.bigBlind,
+        requiresPassword: Boolean(initData.requiresPassword),
       });
     }
 
@@ -74,9 +75,7 @@ export default {
       if (!await roomExists(env, roomId)) {
         return Response.json({ message: '房间码不存在或已过期' }, { status: 404 });
       }
-      if (path === `/api/rooms/${roomId}/exists` && request.method === 'GET') {
-        return Response.json({ exists: true, roomId });
-      }
+      // exists / state 等一律转 DO，以便带回 requiresPassword 等元数据
       const stub = env.GAME_ROOM.getByName(roomId);
       return stub.fetch(request);
     }

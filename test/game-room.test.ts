@@ -58,6 +58,10 @@ class TestSocket {
   errors(): any[] {
     return this.messages.filter(m => m.type === 'error');
   }
+
+  previews(): any[] {
+    return this.messages.filter(m => m.type === 'preview');
+  }
 }
 
 describe('GameRoom 基础流程', () => {
@@ -185,6 +189,38 @@ describe('GameRoom 手牌流程', () => {
     let state = await fetchState(stub, 'ROOM05');
     expect(state.round).toBe('preflop');
     expect(state.currentPlayerIndex).toBe((state.dealerIndex + 3) % 3);
+  });
+
+  it('单挑翻牌后由 BB 先行动', async () => {
+    const stub = await initRoom('HEAD01');
+    const sockets: WebSocket[] = [];
+    for (const name of ['A', 'B']) {
+      const socket = new TestSocket();
+      const ws = await socket.connect(stub, 'HEAD01');
+      socket.send(ws, { type: 'join', name });
+      sockets.push(ws);
+    }
+    await new Promise(resolve => setTimeout(resolve, 80));
+
+    sockets[0].send(JSON.stringify({ type: 'startHand' }));
+    await new Promise(resolve => setTimeout(resolve, 50));
+    let state = await fetchState(stub, 'HEAD01');
+    const dealerIndex = state.dealerIndex;
+    const bbIndex = (dealerIndex + 1) % 2;
+
+    sockets[dealerIndex].send(JSON.stringify({ type: 'action', action: 'call' }));
+    await new Promise(resolve => setTimeout(resolve, 40));
+    sockets[bbIndex].send(JSON.stringify({ type: 'action', action: 'check' }));
+    await new Promise(resolve => setTimeout(resolve, 40));
+    state = await fetchState(stub, 'HEAD01');
+    expect(state.roundComplete).toBe(true);
+
+    sockets[0].send(JSON.stringify({ type: 'nextRound' }));
+    await new Promise(resolve => setTimeout(resolve, 50));
+    state = await fetchState(stub, 'HEAD01');
+    expect(state.round).toBe('flop');
+    expect(state.currentPlayerIndex).toBe(bbIndex);
+    expect(state.roundComplete).toBe(false);
   });
 });
 
@@ -317,6 +353,35 @@ describe('GameRoom 极限与异常场景', () => {
     expect(state.pot).toBe(2000);
   });
 
+  it('不足额 all-in 不重开已经行动玩家的标志', async () => {
+    const stub = await initRoom('SHORT1', 500, 600);
+    const sockets: WebSocket[] = [];
+    for (const name of ['A', 'B', 'C']) {
+      const socket = new TestSocket();
+      const ws = await socket.connect(stub, 'SHORT1');
+      socket.send(ws, { type: 'join', name });
+      sockets.push(ws);
+    }
+    await new Promise(resolve => setTimeout(resolve, 80));
+
+    sockets[0].send(JSON.stringify({ type: 'startHand' }));
+    await new Promise(resolve => setTimeout(resolve, 50));
+    let state = await fetchState(stub, 'SHORT1');
+    expect(state.currentPlayerIndex).toBe(0);
+
+    // A 已跟到 600；SB B 仅余 500，全押后把下注线抬到 1000，增量 400 < BB 600。
+    sockets[0].send(JSON.stringify({ type: 'action', action: 'call' }));
+    await new Promise(resolve => setTimeout(resolve, 40));
+    sockets[1].send(JSON.stringify({ type: 'action', action: 'raise', amount: 500 }));
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    state = await fetchState(stub, 'SHORT1');
+    expect(state.currentBet).toBe(1000);
+    expect(state.players[1].isAllIn).toBe(true);
+    // 不足额加注只要求 A 后续补跟，不能把他重置成“从未行动”。
+    expect(state.players[0].hasActedThisRound).toBe(true);
+  });
+
   it('游戏进行中修改盲注应被拒绝', async () => {
     const stub = await initRoom('ROOM09');
     const s1 = new TestSocket();
@@ -432,9 +497,36 @@ describe('GameRoom 极限与异常场景', () => {
   });
 });
 
-describe('GameRoom 每日清理（北京 04:00 / TTL 销毁房间）', () => {
-  it('alarm 触发后房间被彻底销毁、目录移除', async () => {
+describe('GameRoom 每日清理（北京 04:00 soft reset / TTL 硬销毁）', () => {
+  it('waiting 日切 alarm：soft reset 保留房号/玩家/筹码，目录仍在', async () => {
     const roomId = 'CLN001';
+    const registry = env.ROOM_REGISTRY.getByName(roomId);
+    expect(await registry.claim(Date.now() + 86_400_000)).toBe(true);
+
+    const stub = await initRoom(roomId);
+    const socket = new TestSocket();
+    const ws = await socket.connect(stub, roomId);
+    socket.send(ws, { type: 'join', name: 'A', playerId: 'a', deviceId: 'dev-a' });
+    await new Promise(r => setTimeout(r, 50));
+
+    const stateBefore = await fetchState(stub, roomId);
+    expect(stateBefore.players.length).toBe(1);
+    const chipsBefore = stateBefore.players[0].chips;
+
+    await runDurableObjectAlarm(stub);
+
+    expect(await registry.exists()).toBe(true);
+    const stateAfter = await fetchState(stub, roomId);
+    expect(stateAfter.round).toBe('waiting');
+    expect(stateAfter.handNumber).toBe(0);
+    expect(stateAfter.players.length).toBe(1);
+    expect(stateAfter.players[0].chips).toBe(chipsBefore);
+    const existsRes = await stub.fetch(`https://internal/api/rooms/${roomId}/exists`);
+    expect((await existsRes.json() as any).exists).toBeTruthy();
+  });
+
+  it('TTL 到期 alarm：硬销毁房间与目录', async () => {
+    const roomId = 'CLNTTL';
     const registry = env.ROOM_REGISTRY.getByName(roomId);
     expect(await registry.claim(Date.now() + 86_400_000)).toBe(true);
 
@@ -444,11 +536,11 @@ describe('GameRoom 每日清理（北京 04:00 / TTL 销毁房间）', () => {
     socket.send(ws, { type: 'join', name: 'A', playerId: 'a' });
     await new Promise(r => setTimeout(r, 50));
 
-    // 状态确实存在
-    const stateBefore = await fetchState(stub, roomId);
-    expect(stateBefore.players.length).toBe(1);
+    await runInDurableObject(stub, async (instance: any, s) => {
+      instance.game.expiresAt = Date.now() - 1000;
+      await s.storage.put('game', instance.game);
+    });
 
-    // 触发清理 alarm
     await runDurableObjectAlarm(stub);
 
     expect(await registry.exists()).toBe(false);
@@ -456,7 +548,7 @@ describe('GameRoom 每日清理（北京 04:00 / TTL 销毁房间）', () => {
       expect((await s.storage.list()).size).toBe(0);
     });
     const existsRes = await stub.fetch(`https://internal/api/rooms/${roomId}/exists`);
-    expect((await existsRes.json()).exists).toBeFalsy();
+    expect((await existsRes.json() as any).exists).toBeFalsy();
   });
 });
 
@@ -567,7 +659,70 @@ describe('Side pot（边池）结算', () => {
     expect(Math.abs(aChips - bChips)).toBeLessThanOrEqual(1);
     expect(state.lastWinnerIds.length).toBe(2);
   });
+
+  it('结算预览只读，且深码未跟注退还不进入 lastWinnerIds', async () => {
+    const stub = await initRoom('REFD01', 10, 20);
+    const first = new TestSocket();
+    const firstWs = await first.connect(stub, 'REFD01');
+    first.send(firstWs, { type: 'join', name: 'A' });
+    const second = new TestSocket();
+    const secondWs = await second.connect(stub, 'REFD01');
+    second.send(secondWs, { type: 'join', name: 'B' });
+    await new Promise(resolve => setTimeout(resolve, 80));
+
+    let state = await fetchState(stub, 'REFD01');
+    const aId = state.players[0].id;
+    const bId = state.players[1].id;
+    second.send(secondWs, { type: 'rebuy', targetPlayerId: bId, amount: 1000 });
+    await new Promise(resolve => setTimeout(resolve, 40));
+    first.send(firstWs, { type: 'startHand' });
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    // A 全押；B 再以合法 minRaise（= A 的加注幅度）加注，形成未跟注超额退还层。
+    first.send(firstWs, { type: 'action', action: 'raise', amount: 1000 });
+    await new Promise(resolve => setTimeout(resolve, 40));
+    state = await fetchState(stub, 'REFD01');
+    const minRaise = state.minRaise;
+    expect(minRaise).toBeGreaterThanOrEqual(20);
+    second.send(secondWs, { type: 'action', action: 'raise', amount: minRaise });
+    await new Promise(resolve => setTimeout(resolve, 60));
+    state = await fetchState(stub, 'REFD01');
+    expect(state.round).toBe('showdown');
+    const pot = state.pot;
+    expect(pot).toBeGreaterThan(2000);
+    const chipsBeforePreview = state.players.map(player => player.chips);
+    const aTotal = state.players.find(p => p.id === aId)!.totalBet;
+    const bTotal = state.players.find(p => p.id === bId)!.totalBet;
+    const refund = bTotal - aTotal;
+    expect(refund).toBeGreaterThan(0);
+    const winAmount = aTotal * 2;
+
+    first.send(firstWs, { type: 'previewEndHand', tiers: [[aId]] });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const preview = first.previews().at(-1)?.preview;
+    expect(preview?.total).toBe(pot);
+    expect(preview?.payouts).toEqual([
+      { playerId: aId, playerName: 'A', amount: winAmount, kind: 'win' },
+      { playerId: bId, playerName: 'B', amount: refund, kind: 'refund' },
+    ]);
+
+    state = await fetchState(stub, 'REFD01');
+    expect(state.round).toBe('showdown');
+    expect(state.pot).toBe(pot);
+    expect(state.players.map(player => player.chips)).toEqual(chipsBeforePreview);
+
+    first.send(firstWs, { type: 'endHand', tiers: [[aId]] });
+    await new Promise(resolve => setTimeout(resolve, 60));
+    state = await fetchState(stub, 'REFD01');
+    expect(state.round).toBe('waiting');
+    expect(state.lastWinnerIds).toEqual([aId]);
+    expect(state.sidePots).toEqual([
+      { amount: winAmount, winnerIds: [aId] },
+      { amount: refund, winnerIds: [bId], refund: true },
+    ]);
+  });
 });
+
 
 describe('并发重连与盲注防御', () => {
   it('盲注 SB 与 BB 必须落在两个不同玩家身上（3人桌）', async () => {
@@ -621,6 +776,28 @@ describe('并发重连与盲注防御', () => {
 });
 
 describe('断线坐出(sitting-out)语义', () => {
+  it('两人局一人断线不会把底池自动判给另一人', async () => {
+    const stub = await initRoom('SIT2P1', 10, 20);
+    const first = new TestSocket();
+    const firstWs = await first.connect(stub, 'SIT2P1');
+    first.send(firstWs, { type: 'join', name: 'A' });
+    const second = new TestSocket();
+    const secondWs = await second.connect(stub, 'SIT2P1');
+    second.send(secondWs, { type: 'join', name: 'B' });
+    await new Promise(resolve => setTimeout(resolve, 80));
+
+    first.send(firstWs, { type: 'startHand' });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    secondWs.close();
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    const state = await fetchState(stub, 'SIT2P1');
+    expect(state.round).toBe('preflop');
+    expect(state.pot).toBe(30);
+    expect(state.lastWinnerIds).toHaveLength(0);
+    expect(state.players.filter(player => !player.isFolded)).toHaveLength(2);
+  });
+
   it('断线者轮到行动时纯跳过：行动权转给下一位，筹码/下注不变', async () => {
     const stub = await initRoom('SITOUT01', 10, 20);
     const socks: TestSocket[] = [];
@@ -778,7 +955,7 @@ describe('房间目录、过期与重连', () => {
     expect(existsResponse.status).toBe(200);
     expect(await existsResponse.json()).toMatchObject({
       exists: true,
-      roomId: created.roomId,
+      requiresPassword: false,
     });
   });
 
@@ -832,5 +1009,94 @@ describe('房间目录、过期与重连', () => {
       `https://internal/api/rooms/${roomId}/exists`
     );
     expect(await existsResponse.json()).toMatchObject({ exists: false });
+  });
+});
+
+describe('房主 / 口令 / 最小加注增量', () => {
+  it('首个 deviceId 成为 host；非 host 不能改盲注', async () => {
+    const stub = await initRoom('HOST01');
+    const host = new TestSocket();
+    const guest = new TestSocket();
+    const hws = await host.connect(stub, 'HOST01');
+    const gws = await guest.connect(stub, 'HOST01');
+    host.send(hws, { type: 'join', name: 'Host', deviceId: 'dev-host' });
+    guest.send(gws, { type: 'join', name: 'Guest', deviceId: 'dev-guest' });
+    await new Promise(r => setTimeout(r, 80));
+
+    expect(host.lastState()?.youAreHost).toBe(true);
+    expect(guest.lastState()?.youAreHost).toBe(false);
+
+    guest.send(gws, { type: 'updateSettings', settings: { smallBlind: 25, bigBlind: 50 } });
+    await new Promise(r => setTimeout(r, 50));
+    expect(guest.errors().some((e: any) => String(e.message).includes('房主'))).toBe(true);
+
+    host.send(hws, { type: 'updateSettings', settings: { smallBlind: 25, bigBlind: 50 } });
+    await new Promise(r => setTimeout(r, 50));
+    const state = await fetchState(stub, 'HOST01');
+    expect(state.smallBlind).toBe(25);
+    expect(state.bigBlind).toBe(50);
+  });
+
+  it('设置入桌口令后错误口令不能新加入', async () => {
+    const stub = await getRoomStub('PWD01');
+    const initRes = await stub.fetch(
+      new Request('https://internal/api/rooms/PWD01/init', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ smallBlind: 10, bigBlind: 20, joinPassword: 'secret' }),
+      })
+    );
+    expect(initRes.status).toBe(200);
+
+    const existsRes = await stub.fetch('https://internal/api/rooms/PWD01/exists');
+    expect((await existsRes.json() as any).requiresPassword).toBe(true);
+
+    const bad = new TestSocket();
+    const bws = await bad.connect(stub, 'PWD01');
+    bad.send(bws, { type: 'join', name: 'Eve', deviceId: 'dev-eve', password: 'wrong' });
+    await new Promise(r => setTimeout(r, 50));
+    expect(bad.errors().some((e: any) => String(e.message).includes('口令'))).toBe(true);
+
+    const good = new TestSocket();
+    const gws = await good.connect(stub, 'PWD01');
+    good.send(gws, { type: 'join', name: 'Bob', deviceId: 'dev-bob', password: 'secret' });
+    await new Promise(r => setTimeout(r, 50));
+    expect(good.lastState()?.players.some(p => p.name === 'Bob')).toBe(true);
+  });
+
+  it('完整加注后 minRaise 提升为该次加注额；新街恢复 bigBlind', async () => {
+    const stub = await initRoom('RAISE01', 10, 20);
+    const sockets: WebSocket[] = [];
+    for (const name of ['A', 'B']) {
+      const s = new TestSocket();
+      const w = await s.connect(stub, 'RAISE01');
+      s.send(w, { type: 'join', name, deviceId: `dev-${name}` });
+      sockets.push(w);
+    }
+    await new Promise(r => setTimeout(r, 80));
+
+    sockets[0].send(JSON.stringify({ type: 'startHand' }));
+    await new Promise(r => setTimeout(r, 50));
+    let state = await fetchState(stub, 'RAISE01');
+    expect(state.minRaise).toBe(20);
+    const dealerIndex = state.dealerIndex;
+    // 单挑 preflop：庄家(=SB)先动，加注 +60
+    sockets[dealerIndex].send(JSON.stringify({ type: 'action', action: 'raise', amount: 60 }));
+    await new Promise(r => setTimeout(r, 50));
+    state = await fetchState(stub, 'RAISE01');
+    expect(state.minRaise).toBe(60);
+
+    // BB 跟注完成 preflop
+    const bbIndex = (dealerIndex + 1) % 2;
+    sockets[bbIndex].send(JSON.stringify({ type: 'action', action: 'call' }));
+    await new Promise(r => setTimeout(r, 50));
+    state = await fetchState(stub, 'RAISE01');
+    expect(state.roundComplete).toBe(true);
+
+    sockets[0].send(JSON.stringify({ type: 'nextRound' }));
+    await new Promise(r => setTimeout(r, 50));
+    state = await fetchState(stub, 'RAISE01');
+    expect(state.round).toBe('flop');
+    expect(state.minRaise).toBe(20);
   });
 });

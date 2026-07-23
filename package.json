@@ -5,6 +5,7 @@
   "description": "德州扑克计分器 - Texas Hold'em Poker Scoring App",
   "scripts": {
     "dev": "wrangler dev",
+    "predeploy": "node scripts/predeploy-check.mjs",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",
     "test": "vitest run",
@@ -12,9 +13,10 @@
     "check": "npm run typecheck && npm test && wrangler deploy --dry-run"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.16.18",
+    "@cloudflare/vitest-pool-workers": "^0.18.6",
+    "@types/node": "^22.20.1",
     "typescript": "^5.6.0",
     "vitest": "^4.1.9",
-    "wrangler": "^4.103.0"
+    "wrangler": "^4.112.0"
   }
 }
