@@ -47,6 +47,11 @@ export interface GameState {
   currentPlayerIndex: number;
   smallBlind: number;
   bigBlind: number;
+  /**
+   * 本街最小加注增量（标准 NLHE：开街 = bigBlind；完整加注成功后 = 该次加注额）。
+   * 不足额 all-in 不提升此值。
+   */
+  lastRaiseSize: number;
   handNumber: number;
   lastAction: string;
   /** 最近一手牌的获胜玩家，用于客户端庆祝提示 */
@@ -57,6 +62,10 @@ export interface GameState {
   expiresAt: number;
   /** 私有设备令牌映射，不会发送给客户端 */
   playerDevices: Record<string, string>;
+  /** 建房后首个带 deviceId 成功 join 的设备；敏感写操作仅该设备。不下发原始值。 */
+  hostDeviceId?: string;
+  /** 可选入桌口令（明文，熟人局）；不下发客户端。 */
+  joinPassword?: string;
   /** 最近一次结算拆出的主池/边池明细，供前端展示"谁赢了多少"。
    *  仅在 showdown→waiting 转换瞬间有意义，下一手开始时清空。 */
   sidePots?: SidePot[];
@@ -89,6 +98,8 @@ export interface ClientMessage {
   name?: string;
   playerId?: string;
   deviceId?: string;
+  /** 入桌口令（房间设置了 joinPassword 时必填） */
+  password?: string;
   action?: Action;
   amount?: number;
   /** 旧字段：单层胜者，向后兼容。服务端会包装成 [[...winnerIds]] 单档。 */
@@ -121,6 +132,8 @@ export interface PublicGameState {
   currentPlayerIndex: number;
   smallBlind: number;
   bigBlind: number;
+  /** 当前最小加注增量（与 lastRaiseSize 一致） */
+  minRaise: number;
   handNumber: number;
   lastAction: string;
   lastWinnerIds: string[];
@@ -131,6 +144,10 @@ export interface PublicGameState {
   expiresAt: number;
   /** 当前后端构建标识，便于排查客户端缓存。 */
   serverVersion: string;
+  /** 当前连接是否为房主（基于 deviceId） */
+  youAreHost: boolean;
+  /** 房间是否设置了入桌口令（不回传口令本身） */
+  requiresPassword: boolean;
   /** 最近一次结算的主池/边池明细（仅结算后短暂存在） */
   sidePots?: SidePot[];
   /** 你的玩家 ID（仅发送给该连接） */
@@ -175,4 +192,4 @@ export const DEFAULT_BIG_BLIND = 20;
 export const ROOM_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** 每次生产发布前手动更新；客户端可据此判断是否需要强刷。 */
-export const SERVER_VERSION = '2026.07.19.1';
+export const SERVER_VERSION = '2026.07.23.1';

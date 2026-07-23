@@ -1,8 +1,8 @@
 // 玩家操作层：弃牌/过牌/跟注/加注/全押/下一轮/摊牌排名分档/盲注设置。
 // 集中处理：触觉反馈(M7)、弃牌二次确认(M8)、加注金额步进、加注总额实时预览。
 // 不直接持状态，所有操作通过 socket.send 发出。
-import { $, toast } from './ui.js?v=12';
-import { send, getMyPlayerId } from './socket.js?v=12';
+import { $, toast } from './ui.js?v=13';
+import { send, getMyPlayerId } from './socket.js?v=13';
 import {
   clearSelectedWinners,
   clearSettlementPreview,
@@ -10,7 +10,7 @@ import {
   setSettlementPreview,
   advanceTier,
   undoTier,
-} from './render.js?v=12';
+} from './render.js?v=13';
 
 // ---------- M7: 触觉反馈 ----------
 export function vibrate(pattern) {
@@ -23,9 +23,11 @@ export function vibrate(pattern) {
 export function showRaise(state, myPlayerId) {
   $('#raise-control').style.display = 'flex';
   const me = state.players.find((p) => p.id === myPlayerId);
-  const max = me ? me.chips : state.bigBlind;
+  const minRaise = state.minRaise || state.bigBlind;
+  const max = me ? me.chips : minRaise;
   const inp = $('#raise-amount');
-  inp.value = state.bigBlind;
+  inp.value = minRaise;
+  inp.min = minRaise;
   inp.max = max;
   updateRaiseHint(state, myPlayerId);
   vibrate(8);
@@ -50,11 +52,12 @@ function updateRaiseHint(state, myPlayerId) {
 
 export function adjustRaise(dir, state, myPlayerId) {
   const inp = $('#raise-amount');
-  const step = state.bigBlind;
+  const minRaise = state.minRaise || state.bigBlind;
+  const step = minRaise;
   const me = state.players.find((p) => p.id === myPlayerId);
   const cur = parseInt(inp.value || step);
   const min = parseInt(inp.min) || step;
-  // 下限 = 大盲，上限 = 我的全部筹码
+  // 下限 = 当前最小加注增量，上限 = 我的全部筹码
   const max = me ? me.chips : step;
   inp.value = Math.max(min, Math.min(cur + dir * step, max));
   updateRaiseHint(state, myPlayerId);

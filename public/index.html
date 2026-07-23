@@ -20,7 +20,7 @@
 <link rel="apple-touch-icon" href="./apple-touch-icon.png">
 <link rel="preload" href="./assets/hero-d943dda7.jpg" as="image" type="image/jpeg" fetchpriority="high">
 
-<link rel="stylesheet" href="./styles.css?v=12">
+<link rel="stylesheet" href="./styles.css?v=13">
 </head>
 <body>
 
@@ -33,6 +33,9 @@
       </div>
       <h1>德扑积分器</h1>
       <div class="home-actions">
+        <input id="create-password" class="input-field" type="text" maxlength="32"
+               placeholder="可选：建房口令" autocomplete="off" spellcheck="false"
+               style="margin:8px auto 0;letter-spacing:0;text-transform:none;font-size:14px">
         <button class="btn btn-primary" onclick="createRoom()">创建新牌局</button>
         <div class="home-divider">或加入朋友</div>
         <div class="w-full flex flex-col items-center gap-12">
@@ -40,6 +43,9 @@
           <input id="join-code" class="input-field" placeholder="输入 6 位房间码" maxlength="6"
                  autocapitalize="characters" autocomplete="off" spellcheck="false" inputmode="text"
                  oninput="this.value=this.value.toUpperCase()">
+          <input id="join-password" class="input-field" type="text" maxlength="32"
+                 placeholder="入桌口令（如有）" autocomplete="off" spellcheck="false"
+                 style="letter-spacing:0;text-transform:none;font-size:14px">
           <button class="btn btn-secondary" onclick="joinRoom()">加入牌局</button>
         </div>
       </div>
@@ -68,7 +74,7 @@
     <div class="section-label">牌桌上的朋友</div>
     <div class="player-list" id="lobby-players"></div>
     <div class="room-notices" aria-live="polite">
-      <p>本桌任何人可开始游戏、改盲注、结算与补码，操作前请桌内口头确认。</p>
+      <p>首个入桌设备为房主：仅房主可改盲注、最终结算、给他人补码、移除离线。行动与开下一手仍全员可操作。</p>
       <p id="lobby-expiry"></p>
     </div>
     <div class="section-label">盲注设置</div>
@@ -173,6 +179,6 @@
 
 <div class="toast" id="toast"></div>
 
-<script type="module" src="./scripts/app.js?v=12"></script>
+<script type="module" src="./scripts/app.js?v=13"></script>
 </body>
 </html>

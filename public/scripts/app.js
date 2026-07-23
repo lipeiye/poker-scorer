@@ -1,9 +1,9 @@
 // 应用入口：粘合所有模块。负责状态流转、消息路由、庆祝弹窗、连接联动、SW 注册。
 // 不持有复杂逻辑，只把 socket 的消息分发给 render / feedback / ui。
-import { $, toast, showView, showModal, closeModal, closeTopModal, renderConnDot, applyDeepLink, installKeyboardAdapter } from './ui.js?v=12';
-import { connect, disconnect, onMessage, onConn, getMyPlayerId, setMyPlayerId, persistIdentity, getCurrentRoomId, getCurrentName } from './socket.js?v=12';
-import { deviceId, getSavedPlayer } from './storage.js?v=12';
-import { render, renderActionBar, clearSelectedWinners, selectSoleWinner, toggleWinner, isMyTurn } from './render.js?v=12';
+import { $, toast, showView, showModal, closeModal, closeTopModal, renderConnDot, applyDeepLink, installKeyboardAdapter } from './ui.js?v=13';
+import { connect, disconnect, onMessage, onConn, getMyPlayerId, setMyPlayerId, persistIdentity, getCurrentRoomId, getCurrentName, setJoinPassword } from './socket.js?v=13';
+import { deviceId, getSavedPlayer } from './storage.js?v=13';
+import { render, renderActionBar, clearSelectedWinners, selectSoleWinner, toggleWinner, isMyTurn } from './render.js?v=13';
 import {
   applySettlementPreview,
   cancelSettlementPreview,
@@ -25,8 +25,8 @@ import {
   updateSettings,
   rebuy,
   removePlayer,
-} from './actions.js?v=12';
-import { notifyMyTurn } from './feedback.js?v=12';
+} from './actions.js?v=13';
+import { notifyMyTurn } from './feedback.js?v=13';
 
 // 应用级状态
 let state = null;
@@ -236,14 +236,24 @@ async function joinRoom() {
     toast('房间码不存在，请检查后重试', 2400);
     return;
   }
+  let requiresPassword = false;
   try {
     const res = await fetch('/api/rooms/' + encodeURIComponent(code) + '/exists');
     if (res.status === 404) { toast('房间码不存在或已过期', 2600); return; }
     if (!res.ok) throw new Error('HTTP ' + res.status);
+    const meta = await res.json().catch(() => ({}));
+    requiresPassword = Boolean(meta.requiresPassword);
   } catch (e) {
     toast('暂时无法检查房间，请稍后重试', 2600);
     return;
   }
+  const joinPwd = ($('#join-password')?.value || '').trim();
+  if (requiresPassword && !joinPwd) {
+    toast('该房间需要入桌口令', 2200);
+    $('#join-password')?.focus();
+    return;
+  }
+  setJoinPassword(joinPwd);
   const saved = getSavedPlayer(code);
   if (saved && saved.name) {
     toast('正在恢复你的玩家身份…');
@@ -292,10 +302,16 @@ function submitName(event) {
 
 async function createRoomWithName(name) {
   try {
+    const createPwd = ($('#create-password')?.value || '').trim().slice(0, 32);
+    setJoinPassword(createPwd);
     const res = await fetch('/api/rooms', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ smallBlind: 10, bigBlind: 20 }),
+      body: JSON.stringify({
+        smallBlind: 10,
+        bigBlind: 20,
+        joinPassword: createPwd || undefined,
+      }),
     });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();

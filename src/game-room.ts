@@ -2,10 +2,12 @@ import { DurableObject } from 'cloudflare:workers';
 import type { Player, Action, GameState, ClientMessage, PublicGameState, SettlementPreview, SidePot } from './types';
 import { DEFAULT_CHIPS, DEFAULT_SMALL_BLIND, DEFAULT_BIG_BLIND, ROOM_TTL_MS, SERVER_VERSION, getRoundName } from './types';
 import { buildSettlementPayouts, planPotsByTiers } from './pot-settlement';
+import { isActionable, isContesting } from './player-rules';
 import type { Env } from './env';
 
 interface SocketAttachment {
   playerId?: string;
+  deviceId?: string;
 }
 
 export class GameRoom extends DurableObject<Env> {
@@ -27,6 +29,7 @@ export class GameRoom extends DurableObject<Env> {
       this.game.expiresAt ||= this.game.createdAt + ROOM_TTL_MS;
       this.game.playerDevices ||= {};
       this.game.lastWinnerIds ||= [];
+      this.game.lastRaiseSize ||= this.game.bigBlind || DEFAULT_BIG_BLIND;
       this.game.sidePots = [];
       this.game.players.forEach(player => {
         player.isConnected = false;
@@ -67,6 +70,7 @@ export class GameRoom extends DurableObject<Env> {
         currentPlayerIndex: -1,
         smallBlind: DEFAULT_SMALL_BLIND,
         bigBlind: DEFAULT_BIG_BLIND,
+        lastRaiseSize: DEFAULT_BIG_BLIND,
         handNumber: 0,
         lastAction: '',
         lastWinnerIds: [],
@@ -142,9 +146,11 @@ export class GameRoom extends DurableObject<Env> {
 
     if (url.pathname.endsWith('/exists') && request.method === 'GET') {
       const saved = this.game || await this.ctx.storage.get<GameState>('game');
+      const exists = Boolean(saved && (saved.expiresAt || saved.createdAt + ROOM_TTL_MS) > Date.now());
       return Response.json({
-        exists: Boolean(saved && (saved.expiresAt || saved.createdAt + ROOM_TTL_MS) > Date.now()),
+        exists,
         createdAt: saved?.createdAt,
+        requiresPassword: Boolean(exists && saved?.joinPassword),
       }, { headers: corsHeaders });
     }
 
@@ -172,9 +178,16 @@ export class GameRoom extends DurableObject<Env> {
       if (Number.isInteger(smallBlind) && Number.isInteger(bigBlind) && smallBlind > 0 && bigBlind > smallBlind) {
         this.game.smallBlind = smallBlind;
         this.game.bigBlind = bigBlind;
+        this.game.lastRaiseSize = bigBlind;
       }
       if (Number.isFinite(expiresAt) && expiresAt > Date.now()) {
         this.game.expiresAt = expiresAt;
+      }
+      // 可选入桌口令：空串/缺省 = 无口令；最长 32 字符
+      if (typeof body.joinPassword === 'string') {
+        const pwd = body.joinPassword.trim().slice(0, 32);
+        if (pwd) this.game.joinPassword = pwd;
+        else delete this.game.joinPassword;
       }
       await this.ctx.storage.setAlarm(this.nextCleanupOrExpiry());
       await this.save();
@@ -183,6 +196,7 @@ export class GameRoom extends DurableObject<Env> {
         smallBlind: this.game.smallBlind,
         bigBlind: this.game.bigBlind,
         expiresAt: this.game.expiresAt,
+        requiresPassword: Boolean(this.game.joinPassword),
       }, { headers: corsHeaders });
     }
 
@@ -198,7 +212,7 @@ export class GameRoom extends DurableObject<Env> {
       const stateBefore = JSON.stringify(this.game);
       switch (msg.type) {
         case 'join':
-          await this.handleJoin(ws, msg.name || '玩家', msg.playerId, msg.deviceId);
+          await this.handleJoin(ws, msg.name || '玩家', msg.playerId, msg.deviceId, msg.password);
           break;
         case 'leave':
           await this.handleLeave(ws);
@@ -228,8 +242,8 @@ export class GameRoom extends DurableObject<Env> {
           await this.handleRemovePlayer(ws, msg.targetPlayerId || msg.playerId);
           break;
         case 'sync':
-          // 客户端从后台切回前台时请求重推最新状态（不改变 game）。
-          this.broadcast(this.playerIdFor(ws));
+          // 只回推请求者，避免一人切前台导致全房重渲染。
+          this.sendStateTo(ws);
           return;
         case 'ping':
           ws.send(JSON.stringify({ type: 'pong' }));
@@ -272,6 +286,7 @@ export class GameRoom extends DurableObject<Env> {
     name: string,
     existingPlayerId?: string,
     deviceId?: string,
+    password?: string,
   ): Promise<void> {
     let player: Player | undefined;
 
@@ -293,6 +308,15 @@ export class GameRoom extends DurableObject<Env> {
       player = this.game.players.find(p => p.name === name && !p.isConnected);
     }
 
+    // 新玩家入桌需校验口令；已映射身份的重连可免口令（设备已绑定）。
+    const isReconnect = Boolean(player);
+    if (!isReconnect && this.game.joinPassword) {
+      if ((password || '').trim() !== this.game.joinPassword) {
+        this.sendError(ws, '入桌口令错误');
+        return;
+      }
+    }
+
     if (player) {
       player.isConnected = true;
       player.disconnectedAt = undefined;
@@ -305,7 +329,7 @@ export class GameRoom extends DurableObject<Env> {
       // 先注册新连接，再关闭旧连接：这样旧连接的 webSocketClose 回调里
       // hasAnotherConnection 一定为 true，不会把刚重连的玩家误判离线/挂机。
       this.connections.set(ws, player.id);
-      ws.serializeAttachment({ playerId: player.id } satisfies SocketAttachment);
+      ws.serializeAttachment({ playerId: player.id, deviceId } satisfies SocketAttachment);
       for (const socket of this.ctx.getWebSockets()) {
         if (socket !== ws && this.playerIdFor(socket) === player.id) {
           this.connections.delete(socket);
@@ -313,6 +337,7 @@ export class GameRoom extends DurableObject<Env> {
         }
       }
       if (deviceId) this.game.playerDevices[player.id] = deviceId;
+      this.claimHostIfNeeded(deviceId);
       this.game.lastAction = `${player.name} 重新连接`;
     } else {
       if (this.game.round !== 'waiting') {
@@ -341,11 +366,39 @@ export class GameRoom extends DurableObject<Env> {
       this.game.players.push(player);
       if (deviceId) this.game.playerDevices[id] = deviceId;
       this.connections.set(ws, id);
-      ws.serializeAttachment({ playerId: id } satisfies SocketAttachment);
+      ws.serializeAttachment({ playerId: id, deviceId } satisfies SocketAttachment);
+      this.claimHostIfNeeded(deviceId);
       this.game.lastAction = `${player.name} 加入房间`;
     }
 
     this.broadcast(player.id);
+  }
+
+  /** 首个带 deviceId 的成功 join 成为 host；之后不自动转移。 */
+  private claimHostIfNeeded(deviceId?: string): void {
+    if (!deviceId || this.game.hostDeviceId) return;
+    this.game.hostDeviceId = deviceId;
+  }
+
+  private deviceIdFor(ws: WebSocket): string | undefined {
+    const attachment = ws.deserializeAttachment() as SocketAttachment | null;
+    return attachment?.deviceId;
+  }
+
+  private isHost(ws: WebSocket): boolean {
+    if (!this.game.hostDeviceId) return true; // 无 host 绑定前（旧房）放开，避免锁死
+    const deviceId = this.deviceIdFor(ws);
+    if (deviceId && deviceId === this.game.hostDeviceId) return true;
+    // 兼容：attachment 无 deviceId 时用 playerDevices 反查
+    const playerId = this.playerIdFor(ws);
+    if (playerId && this.game.playerDevices[playerId] === this.game.hostDeviceId) return true;
+    return false;
+  }
+
+  private requireHost(ws: WebSocket, actionLabel: string): boolean {
+    if (this.isHost(ws)) return true;
+    this.sendError(ws, `仅房主可${actionLabel}`);
+    return false;
   }
 
   private async handleLeave(ws: WebSocket): Promise<void> {
@@ -380,7 +433,7 @@ export class GameRoom extends DurableObject<Env> {
 
   /** 检查是否只剩一个争夺者，若是则直接 award + 进入 showdown */
   private checkSoloSurvivor(): void {
-    const contesting = this.game.players.filter(p => !p.isFolded);
+    const contesting = this.game.players.filter(p => isContesting(p));
     if (contesting.length === 1) {
       this.awardToSoloSurvivor(contesting[0].id, '其余玩家弃牌/断线');
     }
@@ -411,19 +464,58 @@ export class GameRoom extends DurableObject<Env> {
     const now = Date.now();
     const ttlExpired = now >= this.game.expiresAt;
 
-    // 手牌进行中：绝不销毁，延后 15 分钟再检查（或等到 TTL）。
-    // 避免北京时间晚间牌局被每日清理误杀。
+    // 手牌进行中且未到 TTL：绝不销毁，延后 15 分钟再检查。
     if (!ttlExpired && this.game.round !== 'waiting') {
       const retryAt = Math.min(now + 15 * 60 * 1000, this.game.expiresAt);
       await this.ctx.storage.setAlarm(Math.max(now + 1_000, retryAt));
       return;
     }
 
-    // waiting 下的每日清理，或 7 天 TTL 到期：销毁房间。
+    // 7 天 TTL：硬销毁房间与目录。
+    if (ttlExpired) {
+      await this.hardDestroyRoom('房间已过期');
+      return;
+    }
+
+    // 北京 04:00 且 waiting：soft reset（保留座位/筹码/host/口令/房号）。
+    this.softResetDay();
+    await this.save();
+    await this.ctx.storage.setAlarm(this.nextCleanupOrExpiry());
+    this.broadcast();
+    this.sendNoticeToAll(this.game.lastAction);
+  }
+
+  /**
+   * 日切 soft reset（策略 B：保留筹码与玩家列表）。
+   * 只清牌局进度，不删 registry / storage。
+   */
+  private softResetDay(): void {
+    this.game.round = 'waiting';
+    this.game.pot = 0;
+    this.game.currentBet = 0;
+    this.game.currentPlayerIndex = -1;
+    this.game.handNumber = 0;
+    this.game.communityCards = 0;
+    this.game.sidePots = [];
+    this.game.lastWinnerIds = [];
+    this.game.lastRaiseSize = this.game.bigBlind;
+    this.game.players.forEach(p => {
+      p.isFolded = false;
+      p.isAllIn = false;
+      p.currentBet = 0;
+      p.totalBet = 0;
+      p.hasActedThisRound = false;
+      p.isSittingOut = !p.isConnected;
+      p.isActive = p.isConnected && p.chips > 0;
+    });
+    this.game.lastAction = '每日清理：牌局进度已重置，座位与筹码保留';
+  }
+
+  private async hardDestroyRoom(closeReason: string): Promise<void> {
     const roomId = this.game.roomId;
     this.expired = true;
     for (const ws of this.ctx.getWebSockets()) {
-      try { ws.close(1000, '房间已清理'); } catch { /* already closed */ }
+      try { ws.close(1000, closeReason); } catch { /* already closed */ }
     }
     await this.env.ROOM_REGISTRY.getByName(roomId).remove();
     await this.ctx.storage.deleteAll();
@@ -487,7 +579,8 @@ export class GameRoom extends DurableObject<Env> {
       }
 
       case 'raise': {
-        const raiseAmount = Math.max(1, amount || this.game.bigBlind);
+        const minRaise = this.game.lastRaiseSize || this.game.bigBlind;
+        const raiseAmount = Math.max(1, amount || minRaise);
         const totalNeeded = toCall + raiseAmount;
 
         if (totalNeeded >= player.chips) {
@@ -501,17 +594,16 @@ export class GameRoom extends DurableObject<Env> {
           if (player.currentBet > this.game.currentBet) {
             const raiseSize = player.currentBet - prevBet;
             this.game.currentBet = player.currentBet;
-            // 不足额 all-in（加注幅度 < 大盲）不完整重开行动：已行动者只需补跟，不可再加注重开。
-            // 通过不 reset 标志实现；isRoundComplete 仍要求 currentBet 对齐，故未跟满者仍会被轮到。
-            if (raiseSize >= this.game.bigBlind) {
+            // 不足额 all-in（加注幅度 < 当前 minRaise）不完整重开、不提升 lastRaiseSize。
+            if (raiseSize >= minRaise) {
               this.resetActedFlags(playerIndex);
+              this.game.lastRaiseSize = raiseSize;
             }
           }
           this.game.lastAction = `${player.name} All-in ${allIn}`;
         } else {
-          // 无条件 enforce 最低下注/加注额 >= bigBlind
-          if (raiseAmount < this.game.bigBlind) {
-            this.sendError(ws, `最小加注额为 ${this.game.bigBlind}`);
+          if (raiseAmount < minRaise) {
+            this.sendError(ws, `最小加注额为 ${minRaise}`);
             return;
           }
           player.chips -= totalNeeded;
@@ -520,6 +612,7 @@ export class GameRoom extends DurableObject<Env> {
           this.game.pot += totalNeeded;
           this.game.currentBet = player.currentBet;
           this.resetActedFlags(playerIndex);
+          this.game.lastRaiseSize = raiseAmount;
           this.game.lastAction = `${player.name} 加注到 ${player.currentBet}`;
         }
         break;
@@ -529,7 +622,7 @@ export class GameRoom extends DurableObject<Env> {
     player.hasActedThisRound = true;
     // 仍在争夺底池的玩家 = 未弃牌（断线挂机者仍占座、仍争夺，不算退出）。
     // 只有真正 fold 才算退出争夺，避免"一人断线→另一人直接赢"。
-    const contestingPlayers = this.game.players.filter(p => !p.isFolded);
+    const contestingPlayers = this.game.players.filter(p => isContesting(p));
     if (contestingPlayers.length === 1) {
       this.awardToSoloSurvivor(contestingPlayers[0].id, '其余玩家弃牌');
       return;
@@ -563,7 +656,7 @@ export class GameRoom extends DurableObject<Env> {
     for (let i = 1; i <= n; i++) {
       const idx = (this.game.currentPlayerIndex + i) % n;
       const p = this.game.players[idx];
-      if (!p.isFolded && p.isActive && !p.isAllIn && !p.isSittingOut) {
+      if (isActionable(p)) {
         this.game.currentPlayerIndex = idx;
         return;
       }
@@ -572,9 +665,7 @@ export class GameRoom extends DurableObject<Env> {
   }
 
   private isRoundComplete(): boolean {
-    const actionable = this.game.players.filter(
-      p => !p.isFolded && p.isActive && !p.isAllIn && !p.isSittingOut
-    );
+    const actionable = this.game.players.filter(p => isActionable(p));
     if (actionable.length === 0) return true;
     return actionable.every(
       p => p.hasActedThisRound && p.currentBet === this.game.currentBet
@@ -588,11 +679,9 @@ export class GameRoom extends DurableObject<Env> {
    * 线下会直接发完公共牌；计分器跳过无意义的逐街 check。
    */
   private shouldRunOutBoard(): boolean {
-    const contesting = this.game.players.filter(p => !p.isFolded);
+    const contesting = this.game.players.filter(p => isContesting(p));
     if (contesting.length < 2) return false;
-    const actionable = contesting.filter(
-      p => p.isActive && !p.isAllIn && !p.isSittingOut
-    );
+    const actionable = contesting.filter(p => isActionable(p));
     return actionable.length <= 1;
   }
 
@@ -604,6 +693,7 @@ export class GameRoom extends DurableObject<Env> {
       p.hasActedThisRound = false;
     });
     this.game.currentBet = 0;
+    this.game.lastRaiseSize = this.game.bigBlind;
     this.game.round = 'showdown';
     this.game.lastAction = '无人可再加注，直接进入摊牌 — 请选择获胜者';
     this.broadcast();
@@ -630,6 +720,7 @@ export class GameRoom extends DurableObject<Env> {
       p.hasActedThisRound = false;
     });
     this.game.currentBet = 0;
+    this.game.lastRaiseSize = this.game.bigBlind;
 
     switch (this.game.round) {
       case 'preflop': this.game.round = 'flop'; this.game.communityCards = 3; break;
@@ -678,6 +769,7 @@ export class GameRoom extends DurableObject<Env> {
     this.game.round = 'preflop';
     this.game.pot = 0;
     this.game.currentBet = 0;
+    this.game.lastRaiseSize = this.game.bigBlind;
     this.game.communityCards = 0;
 
     if (this.game.handNumber > 1) {
@@ -741,7 +833,7 @@ export class GameRoom extends DurableObject<Env> {
     bb.totalBet = bbAmt;
     this.game.pot += bbAmt;
     // currentBet = 实际最高已下注（BB 短码时为 bbAmt，而非名义 bigBlind）。
-    // 跟注只需对齐最高有效下注；最小加注幅度仍用 bigBlind 约束。
+    // 跟注只需对齐最高有效下注；最小加注幅度由 lastRaiseSize（开街 = bigBlind）约束。
     this.game.currentBet = Math.max(sbAmt, bbAmt);
     if (bb.chips <= 0) bb.isAllIn = true;
 
@@ -765,7 +857,7 @@ export class GameRoom extends DurableObject<Env> {
 
     for (let i = 0; i < this.game.players.length; i++) {
       const idx = (startIdx + i) % this.game.players.length;
-      if (!this.game.players[idx].isFolded && this.game.players[idx].isActive && !this.game.players[idx].isAllIn && !this.game.players[idx].isSittingOut) {
+      if (isActionable(this.game.players[idx])) {
         this.game.currentPlayerIndex = idx;
         return;
       }
@@ -871,6 +963,7 @@ export class GameRoom extends DurableObject<Env> {
   }
 
   private async handleEndHand(ws: WebSocket, tiers: string[][] | undefined, winnerIds: string[] | undefined): Promise<void> {
+    if (!this.requireHost(ws, '结算')) return;
     if (this.game.round !== 'showdown') {
       this.sendError(ws, '当前不在摊牌阶段');
       return;
@@ -960,6 +1053,8 @@ export class GameRoom extends DurableObject<Env> {
       return;
     }
     const targetId = targetPlayerId || actorId;
+    // 给他人补码仅房主；给自己开放
+    if (targetId !== actorId && !this.requireHost(ws, '给他人补码')) return;
     const player = this.game.players.find(p => p.id === targetId);
     if (!player) {
       this.sendError(ws, '玩家不存在');
@@ -979,6 +1074,7 @@ export class GameRoom extends DurableObject<Env> {
 
   /** 等待阶段移除离线玩家，释放座位 */
   private async handleRemovePlayer(ws: WebSocket, targetPlayerId?: string): Promise<void> {
+    if (!this.requireHost(ws, '移除玩家')) return;
     if (this.game.round !== 'waiting') {
       this.sendError(ws, '仅在等待开始时可以移除玩家');
       return;
@@ -1017,6 +1113,7 @@ export class GameRoom extends DurableObject<Env> {
   }
 
   private async handleSettings(ws: WebSocket, settings: Partial<Pick<GameState, 'smallBlind' | 'bigBlind'>>): Promise<void> {
+    if (!this.requireHost(ws, '修改盲注')) return;
     if (this.game.round !== 'waiting') {
       this.sendError(ws, '游戏进行中不能修改盲注');
       return;
@@ -1030,23 +1127,32 @@ export class GameRoom extends DurableObject<Env> {
     }
     this.game.smallBlind = smallBlind;
     this.game.bigBlind = bigBlind;
+    if (this.game.round === 'waiting') {
+      this.game.lastRaiseSize = bigBlind;
+    }
     this.game.lastAction = `盲注调整为 SB ${this.game.smallBlind} / BB ${this.game.bigBlind}`;
     this.broadcast();
     this.sendNoticeToAll(this.game.lastAction);
   }
 
   private broadcast(yourPlayerId?: string): void {
-    const baseState = this.publicState();
     const socks = this.ctx.getWebSockets();
-
     for (const ws of socks) {
-      try {
-        const pid = this.playerIdFor(ws);
-        const state: PublicGameState = { ...baseState, yourPlayerId: pid || yourPlayerId };
-        ws.send(JSON.stringify({ type: 'state', state }));
-      } catch {
-        // connection may have closed
-      }
+      this.sendStateTo(ws, yourPlayerId);
+    }
+  }
+
+  /** 向单个连接推送 state（sync / 定向回推用） */
+  private sendStateTo(ws: WebSocket, fallbackYourPlayerId?: string): void {
+    try {
+      const pid = this.playerIdFor(ws) || fallbackYourPlayerId;
+      const state: PublicGameState = {
+        ...this.publicStateFor(ws),
+        yourPlayerId: pid,
+      };
+      ws.send(JSON.stringify({ type: 'state', state }));
+    } catch {
+      // connection may have closed
     }
   }
 
@@ -1072,7 +1178,7 @@ export class GameRoom extends DurableObject<Env> {
     return undefined;
   }
 
-  private publicState(): PublicGameState {
+  private publicStateFor(ws?: WebSocket): PublicGameState {
     return {
       roomId: this.game.roomId,
       players: this.game.players,
@@ -1083,6 +1189,7 @@ export class GameRoom extends DurableObject<Env> {
       currentPlayerIndex: this.game.currentPlayerIndex,
       smallBlind: this.game.smallBlind,
       bigBlind: this.game.bigBlind,
+      minRaise: this.game.lastRaiseSize || this.game.bigBlind,
       handNumber: this.game.handNumber,
       lastAction: this.game.lastAction,
       lastWinnerIds: this.game.lastWinnerIds,
@@ -1091,7 +1198,14 @@ export class GameRoom extends DurableObject<Env> {
         && this.isRoundComplete(),
       expiresAt: this.game.expiresAt,
       serverVersion: SERVER_VERSION,
+      youAreHost: ws ? this.isHost(ws) : !this.game.hostDeviceId,
+      requiresPassword: Boolean(this.game.joinPassword),
       sidePots: this.game.sidePots,
     };
+  }
+
+  /** HTTP /state 等无连接上下文时用 */
+  private publicState(): PublicGameState {
+    return this.publicStateFor(undefined);
   }
 }

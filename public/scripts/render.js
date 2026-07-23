@@ -1,6 +1,6 @@
 // 渲染层：根据后端 state 渲染大厅 / 游戏界面 / 摊牌 / 庆祝。
 // 只读 state、只写 DOM，不直接发消息（操作由 app.js 通过事件委托处理）。
-import { $, esc, showView } from './ui.js?v=12';
+import { $, esc, showView } from './ui.js?v=13';
 
 /** 把断线时间戳格式化成「已离线 N秒/N分钟/N小时」。无时间戳返回 '离线'。 */
 function formatOfflineDuration(disconnectedAt) {
@@ -134,15 +134,28 @@ function renderLobby(state, myPlayerId) {
   const expiry = state.expiresAt
     ? new Date(state.expiresAt).toLocaleString()
     : '未知';
-  $('#lobby-expiry').textContent = `房间将在 ${expiry} 后过期 · 服务端 ${state.serverVersion || '旧版本'}`;
+  const hostHint = state.youAreHost
+    ? '你是房主 · 可改盲注 / 结算 / 给他人补码 / 移除离线'
+    : '你不是房主 · 仅房主可改盲注、结算、给他人补码、移除离线';
+  $('#lobby-expiry').textContent =
+    `房间将在 ${expiry} 后过期 · 服务端 ${state.serverVersion || '旧版本'} · ${hostHint}`;
   renderLeaderboard('lobby-leaderboard', state, myPlayerId);
 
   const { me } = buildPlayerMap(state.players, myPlayerId);
   $('#btn-start').style.display = me ? '' : 'none';
 
+  // 盲注：非房主只读
+  const sb = $('#set-sb');
+  const bb = $('#set-bb');
+  if (sb) sb.disabled = !state.youAreHost;
+  if (bb) bb.disabled = !state.youAreHost;
+
   $('#lobby-players').innerHTML = state.players.map((p) => {
-    const rebuyBtn = `<button class="btn btn-xs btn-secondary" data-action="rebuy" data-player="${p.id}" title="补码 +1000">+码</button>`;
-    const removeBtn = !p.isConnected
+    const canRebuyOthers = state.youAreHost || p.id === myPlayerId;
+    const rebuyBtn = canRebuyOthers
+      ? `<button class="btn btn-xs btn-secondary" data-action="rebuy" data-player="${p.id}" title="补码 +1000">+码</button>`
+      : '';
+    const removeBtn = state.youAreHost && !p.isConnected
       ? `<button class="btn btn-xs btn-danger" data-action="remove-player" data-player="${p.id}" title="移除离线玩家">移除</button>`
       : '';
     return `
@@ -283,8 +296,9 @@ export function renderActionBar(state, myPlayerId) {
     ${allInBtn}
   `;
 
-  $('#raise-amount').value = state.bigBlind;
-  $('#raise-amount').min = state.bigBlind;
+  const minRaise = state.minRaise || state.bigBlind;
+  $('#raise-amount').value = minRaise;
+  $('#raise-amount').min = minRaise;
   $('#raise-amount').max = me.chips;
 }
 
@@ -300,10 +314,13 @@ function renderShowdown(state, myPlayerId) {
         <strong>+${payout.amount}</strong>
       </div>
     `).join('');
+    const hostOnly = state.youAreHost === false
+      ? '<div class="text-xs text-dim" style="width:100%;text-align:center">仅房主可最终确认结算</div>'
+      : '<button class="btn btn-xs btn-primary" data-action="commit-settlement">确认结算</button>';
     $('#action-buttons').innerHTML = `
       <div class="settlement-preview">${rows}</div>
       <button class="btn btn-xs btn-secondary" data-action="cancel-settlement">返回修改</button>
-      <button class="btn btn-xs btn-primary" data-action="commit-settlement">确认结算</button>
+      ${hostOnly}
     `;
     return;
   }
@@ -322,6 +339,8 @@ function renderShowdown(state, myPlayerId) {
   const undoBtn = !headsUp && selectedTiers.length > 0
     ? '<button class="btn btn-xs btn-secondary" data-action="undo-tier">上一档</button>'
     : '';
+  // 选档/预览人人可做；真正结算仅房主（commit 在预览页）
+  const settleLabel = state.youAreHost === false ? '请求预览' : '确认结算';
 
   $('#action-buttons').innerHTML = activePlayers.map((p) => {
     const sel = currentTier.has(p.id);
@@ -330,7 +349,7 @@ function renderShowdown(state, myPlayerId) {
   }).join('')
     + (headsUp ? '' : `<button class="btn btn-xs btn-secondary" data-action="next-tier"${nextDisabled}>下一档</button>`)
     + undoBtn
-    + `<button class="btn btn-xs btn-primary" data-action="confirm-tiers"${confirmDisabled}>确认结算</button>`;
+    + `<button class="btn btn-xs btn-primary" data-action="confirm-tiers"${confirmDisabled}>${settleLabel}</button>`;
 }
 
 /** 本轮下注是否完成（前后端同源逻辑） */
